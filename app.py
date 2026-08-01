@@ -25,6 +25,7 @@ ensure_streamlit_run()
 st.set_page_config(page_title="Household Expenses", page_icon="🏠", layout="wide")
 
 CATEGORIES = ["Grocery", "Internet", "Electricity", "Gas", "Petrol", "Maintenance", "Cooper", "Cooper Doctor", "Car Servicing", "Car Wash", "Alcohol", "Parking", "Festival", "Misc", "Medical", "FTH"]
+USERS = ["RN", "DK"]
 ADMIN_PASSWORD = "2498"
 DATABASE_PATH = Path(__file__).with_name("expenses.db")
 
@@ -37,11 +38,15 @@ def get_connection() -> sqlite3.Connection:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             transaction_date TEXT NOT NULL,
             category TEXT NOT NULL,
+            user TEXT NOT NULL DEFAULT 'RN',
             amount REAL NOT NULL CHECK(amount > 0),
             note TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )"""
     )
+    columns = [row[1] for row in connection.execute("PRAGMA table_info(expenses)").fetchall()]
+    if "user" not in columns:
+        connection.execute("ALTER TABLE expenses ADD COLUMN user TEXT NOT NULL DEFAULT 'RN'")
     connection.commit()
     return connection
 
@@ -85,20 +90,20 @@ def authenticate_app() -> bool:
     return False
 
 
-def add_expense(transaction_date: date, category: str, amount: float, note: str) -> None:
+def add_expense(transaction_date: date, category: str, user: str, amount: float, note: str) -> None:
     connection = get_connection()
     connection.execute(
-        "INSERT INTO expenses (transaction_date, category, amount, note) VALUES (?, ?, ?, ?)",
-        (transaction_date.isoformat(), category, amount, note.strip()),
+        "INSERT INTO expenses (transaction_date, category, user, amount, note) VALUES (?, ?, ?, ?, ?)",
+        (transaction_date.isoformat(), category, user, amount, note.strip()),
     )
     connection.commit()
 
 
-def update_expense(expense_id: int, transaction_date: date, category: str, amount: float, note: str) -> None:
+def update_expense(expense_id: int, transaction_date: date, category: str, user: str, amount: float, note: str) -> None:
     connection = get_connection()
     connection.execute(
-        "UPDATE expenses SET transaction_date = ?, category = ?, amount = ?, note = ? WHERE id = ?",
-        (transaction_date.isoformat(), category, amount, note.strip(), expense_id),
+        "UPDATE expenses SET transaction_date = ?, category = ?, user = ?, amount = ?, note = ? WHERE id = ?",
+        (transaction_date.isoformat(), category, user, amount, note.strip(), expense_id),
     )
     connection.commit()
 
@@ -119,25 +124,64 @@ def flush_expenses(start_date: date, end_date: date) -> int:
     return cursor.rowcount
 
 
-def load_expenses(start_date: date, end_date: date, categories: list[str]) -> pd.DataFrame:
-    placeholders = ", ".join("?" for _ in categories)
-    query = f"""SELECT id, transaction_date AS Date, category AS Category, amount AS Amount, note AS Note
-        FROM expenses WHERE transaction_date BETWEEN ? AND ? AND category IN ({placeholders})
+def load_expenses(start_date: date, end_date: date, categories: list[str], users: list[str]) -> pd.DataFrame:
+    category_placeholders = ", ".join("?" for _ in categories)
+    user_placeholders = ", ".join("?" for _ in users)
+    query = f"""SELECT id, transaction_date AS Date, category AS Category, user AS User, amount AS Amount, note AS Note
+        FROM expenses WHERE transaction_date BETWEEN ? AND ? AND category IN ({category_placeholders}) AND user IN ({user_placeholders})
         ORDER BY transaction_date DESC, id DESC"""
-    rows = get_connection().execute(query, [start_date.isoformat(), end_date.isoformat(), *categories]).fetchall()
-    return pd.DataFrame(rows, columns=["ID", "Date", "Category", "Amount", "Note"])
+    rows = get_connection().execute(query, [start_date.isoformat(), end_date.isoformat(), *categories, *users]).fetchall()
+    return pd.DataFrame(rows, columns=["ID", "Date", "Category", "User", "Amount", "Note"])
 
 
-def report_context(expenses: pd.DataFrame, report_name: str) -> str:
+def load_latest_expenses(limit: int = 100) -> pd.DataFrame:
+    query = """SELECT id, transaction_date AS Date, category AS Category, user AS User, amount AS Amount, note AS Note
+        FROM expenses ORDER BY transaction_date DESC, id DESC LIMIT ?"""
+    rows = get_connection().execute(query, (limit,)).fetchall()
+    return pd.DataFrame(rows, columns=["ID", "Date", "Category", "User", "Amount", "Note"])
+
+
+def report_context(expenses: pd.DataFrame, report_name: str, split_pct: int, actual_rn: float, actual_dk: float, rn_share: float, dk_share: float) -> str:
     """Send a limited snapshot of the selected report to the AI, not the full database."""
     category_totals = expenses.groupby("Category", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
+    user_totals = expenses.groupby("User", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
     daily_totals = expenses.groupby("Date", as_index=False)["Amount"].sum().sort_values("Date")
+    settlement_direction = (
+        "RN owes DK" if actual_rn < rn_share else
+        "DK owes RN" if actual_rn > rn_share else
+        "Settled"
+    )
+    settlement_amount = abs(actual_rn - rn_share)
+    settlement_note = (
+        f"DK should pay RN {settlement_amount:.2f}." if actual_rn > rn_share else
+        f"RN should pay DK {settlement_amount:.2f}." if actual_rn < rn_share else
+        "The report is settled; no payment is due."
+    )
     return f"""Report name: {report_name}
 Transactions: {len(expenses)}
 Total spend: {expenses['Amount'].sum():.2f}
 Category totals:\n{category_totals.to_csv(index=False)}
+User totals:\n{user_totals.to_csv(index=False)}
+Split allocation: RN {split_pct}%, DK {100 - split_pct}%
+Target split amounts: RN {rn_share:.2f}, DK {dk_share:.2f}
+Actual spent: RN {actual_rn:.2f}, DK {actual_dk:.2f}
+Settlement direction: {settlement_direction}
+Settlement amount: {settlement_amount:.2f}
+Settlement note: {settlement_note}
 Daily totals:\n{daily_totals.to_csv(index=False)}
 Recent transactions (up to 100):\n{expenses.head(100).to_csv(index=False)}"""
+
+
+def agent_context(expenses: pd.DataFrame, report_name: str, split_pct: int, actual_rn: float, actual_dk: float, rn_share: float, dk_share: float, latest_transactions: pd.DataFrame) -> str:
+    report_text = report_context(expenses, report_name, split_pct, actual_rn, actual_dk, rn_share, dk_share)
+    latest_text = latest_transactions.to_csv(index=False) if not latest_transactions.empty else ""
+    return (
+        report_text
+        + "\n\nNOTE: The selected report is the primary context for answering. "
+        + "Latest DB transactions are additional context only and may be outside the selected report period.\n"
+        + "Latest DB transactions (most recent 100):\n"
+        + latest_text
+    )
 
 
 def ask_agent(api_key: str, question: str, context: str) -> str:
@@ -145,7 +189,7 @@ def ask_agent(api_key: str, question: str, context: str) -> str:
         model="gpt-4o-mini",
         temperature=0,
         messages=[
-            {"role": "system", "content": "You are a household-expense analysis assistant. Answer only from the supplied report data. If data cannot answer a question, say so. Be concise, use currency-neutral amounts, avoid financial, medical, or tax advice, and end with exactly three useful follow-up questions."},
+            {"role": "system", "content": "You are a household-expense analysis assistant. Use only the supplied report data to answer. The selected report is the primary source. Latest DB transactions are additional context only. If the report includes a settlement note, use it directly. If data cannot answer a question, say so. Be concise, use currency-neutral amounts, avoid financial, medical, or tax advice, and end with exactly three useful follow-up questions."},
             {"role": "user", "content": f"REPORT DATA:\n{context}\n\nQUESTION:\n{question}"},
         ],
     )
@@ -177,11 +221,12 @@ def main() -> None:
         with st.form("expense_form", clear_on_submit=True):
             transaction_date = st.date_input("Transaction date", value=date.today())
             category = st.selectbox("Category", CATEGORIES)
+            user = st.selectbox("User", USERS)
             amount = st.number_input("Amount", min_value=0.01, step=1.0, format="%.2f")
             note = st.text_input("Note (optional)", placeholder="e.g. weekly vegetables")
             submitted = st.form_submit_button("Save expense", use_container_width=True)
         if submitted:
-            add_expense(transaction_date, category, amount, note)
+            add_expense(transaction_date, category, user, amount, note)
             st.success("Expense saved.")
 
         st.divider()
@@ -190,6 +235,7 @@ def main() -> None:
         report_start = st.date_input("From", value=today.replace(day=1), key="report_start")
         report_end = st.date_input("To", value=today, key="report_end")
         selected_categories = st.multiselect("Categories", CATEGORIES, default=CATEGORIES)
+        selected_users = st.multiselect("Users", USERS, default=USERS)
         report_name = st.text_input("Report name", value="Household expense report")
 
     if report_start > report_end:
@@ -198,8 +244,11 @@ def main() -> None:
     if not selected_categories:
         st.warning("Choose at least one category to generate a report.")
         return
+    if not selected_users:
+        st.warning("Choose at least one user to generate a report.")
+        return
 
-    expenses = load_expenses(report_start, report_end, selected_categories)
+    expenses = load_expenses(report_start, report_end, selected_categories, selected_users)
     st.subheader(report_name)
     st.caption(f"{report_start:%d %b %Y} – {report_end:%d %b %Y} · {', '.join(selected_categories)}")
     total = expenses["Amount"].sum() if not expenses.empty else 0.0
@@ -216,10 +265,42 @@ def main() -> None:
             st.info("No expenses match these filters. Add an expense from the sidebar.")
         else:
             category_totals = expenses.groupby("Category", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
+            user_totals = expenses.groupby("User", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
             st.bar_chart(category_totals, x="Category", y="Amount")
             st.dataframe(category_totals, hide_index=True, use_container_width=True)
+            st.markdown("### Total by user")
+            st.dataframe(user_totals, hide_index=True, use_container_width=True)
             st.download_button("Download this report as CSV", data=expenses.to_csv(index=False).encode("utf-8"), file_name="household_expenses_report.csv", mime="text/csv")
             st.caption(f"Average transaction amount: {average:,.2f}")
+
+            split_pct = st.number_input("RN percent share of total", min_value=0, max_value=100, value=40, step=1, format="%d")
+            rn_share = total * split_pct / 100
+            dk_share = total - rn_share
+            split_data = pd.DataFrame(
+                [{"User": "RN", "Percent": f"{split_pct}%", "Amount": rn_share}, {"User": "DK", "Percent": f"{100 - split_pct}%", "Amount": dk_share}]
+            )
+            st.markdown("### Split summary")
+            st.dataframe(split_data, hide_index=True, use_container_width=True)
+            col_a, col_b = st.columns(2)
+            col_a.metric("RN share", f"{rn_share:,.2f}")
+            col_b.metric("DK share", f"{dk_share:,.2f}")
+            st.caption("The selected percentage is applied to the report total to split expenses between RN and DK.")
+
+            actual_rn = float(user_totals.loc[user_totals["User"] == "RN", "Amount"].sum()) if not user_totals.empty else 0.0
+            actual_dk = float(user_totals.loc[user_totals["User"] == "DK", "Amount"].sum()) if not user_totals.empty else 0.0
+            rn_diff = actual_rn - rn_share
+            dk_diff = actual_dk - dk_share
+            if abs(rn_diff) < 0.005:
+                settlement = "RN is settled with the target allocation."
+            elif rn_diff > 0:
+                settlement = f"RN paid {rn_diff:,.2f} more than their target. DK should pay RN {rn_diff:,.2f}."
+            else:
+                settlement = f"RN paid {abs(rn_diff):,.2f} less than their target. RN should pay DK {abs(rn_diff):,.2f}."
+
+            st.markdown("### Settlement summary")
+            st.write(f"Actual RN expense: {actual_rn:,.2f}")
+            st.write(f"Actual DK expense: {actual_dk:,.2f}")
+            st.write(settlement)
 
     with transactions_tab:
         st.dataframe(expenses.drop(columns="ID"), hide_index=True, use_container_width=True)
@@ -240,11 +321,12 @@ def main() -> None:
             with st.form("edit_record_form", clear_on_submit=False):
                 edit_date = st.date_input("Transaction date", value=pd.to_datetime(selected["Date"]).date(), key="edit_date")
                 edit_category = st.selectbox("Category", CATEGORIES, index=CATEGORIES.index(selected["Category"]))
+                edit_user = st.selectbox("User", USERS, index=USERS.index(selected["User"]))
                 edit_amount = st.number_input("Amount", min_value=0.01, step=1.0, value=float(selected["Amount"]), format="%.2f", key="edit_amount")
                 edit_note = st.text_input("Note", value=str(selected["Note"]), key="edit_note")
                 update_record = st.form_submit_button("Update record")
             if update_record:
-                update_expense(selected_id, edit_date, edit_category, edit_amount, edit_note)
+                update_expense(selected_id, edit_date, edit_category, edit_user, edit_amount, edit_note)
                 st.success("Record updated.")
                 rerun_app()
 
@@ -276,7 +358,14 @@ def main() -> None:
 
     with agent_tab:
         st.write("Ask about the report currently selected above. The AI receives only this report’s data.")
-        common_questions = ["Which categories cost the most, and what should I review?", "How did spending change over the selected period?", "What are the largest individual expenses?", "Which dates had unusually high spending?"]
+        common_questions = [
+            "How much should DK pay RN based on the report?",
+            "How much will RN get from DK for the selected period?",
+            "Which categories cost the most, and what should I review?",
+            "How did spending change over the selected period?",
+            "What are the largest individual expenses?",
+            "Which dates had unusually high spending?",
+        ]
         question_choice = st.selectbox("Common questions", ["Write my own question"] + common_questions)
         custom_question = st.text_area("Your question", placeholder="e.g. How much did I spend on grocery and petrol?")
         question = custom_question.strip() or (question_choice if question_choice != "Write my own question" else "")
@@ -288,7 +377,12 @@ def main() -> None:
             else:
                 with st.spinner("Reading the selected report…"):
                     try:
-                        answer = ask_agent(api_key, question, report_context(expenses, report_name))
+                        latest_transactions = load_latest_expenses()
+                        answer = ask_agent(
+                            api_key,
+                            question,
+                            agent_context(expenses, report_name, split_pct, actual_rn, actual_dk, rn_share, dk_share, latest_transactions),
+                        )
                     except Exception:
                         st.error("The AI agent could not respond. Check the API key and network connection.")
                     else:
