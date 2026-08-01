@@ -31,3 +31,7 @@ reports, and CSV download work without an API key. The app opens at
 SQLite is appropriate for local use. Before deploying a multi-user app, replace
 it with a persistent hosted database such as Postgres; cloud containers can be
 restarted and their local files lost.
+
+For Streamlit Cloud or any hosted environment, set `DATABASE_URL` in Streamlit
+secrets or your environment so the app can connect to a persistent database.
+If you use Postgres, also install the appropriate driver such as `psycopg[binary]`.

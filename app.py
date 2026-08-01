@@ -1,7 +1,6 @@
 """Household Expense Tracker — Streamlit app with optional AI insights."""
 
 import os
-import sqlite3
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -10,6 +9,8 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Connection
 
 
 def ensure_streamlit_run() -> None:
@@ -30,23 +31,38 @@ ADMIN_PASSWORD = "2498"
 DATABASE_PATH = Path(__file__).with_name("expenses.db")
 
 
+def get_database_url() -> Optional[str]:
+    return os.getenv("DATABASE_URL")
+
+
 @st.cache_resource
-def get_connection() -> sqlite3.Connection:
-    connection = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
-    connection.execute(
-        """CREATE TABLE IF NOT EXISTS expenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            transaction_date TEXT NOT NULL,
-            category TEXT NOT NULL,
-            user TEXT NOT NULL DEFAULT 'RN',
-            amount REAL NOT NULL CHECK(amount > 0),
-            note TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )"""
+def get_engine():
+    db_url = get_database_url()
+    if db_url:
+        return create_engine(db_url, future=True)
+    return create_engine(
+        f"sqlite:///{DATABASE_PATH}",
+        future=True,
+        connect_args={"check_same_thread": False},
     )
-    columns = [row[1] for row in connection.execute("PRAGMA table_info(expenses)").fetchall()]
-    if "user" not in columns:
-        connection.execute("ALTER TABLE expenses ADD COLUMN user TEXT NOT NULL DEFAULT 'RN'")
+
+
+@st.cache_resource
+def get_connection() -> Connection:
+    connection = get_engine().connect()
+    connection.execute(
+        text(
+            """CREATE TABLE IF NOT EXISTS expenses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                transaction_date TEXT NOT NULL,
+                category TEXT NOT NULL,
+                user TEXT NOT NULL DEFAULT 'RN',
+                amount REAL NOT NULL CHECK(amount > 0),
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+    )
     connection.commit()
     return connection
 
@@ -93,8 +109,14 @@ def authenticate_app() -> bool:
 def add_expense(transaction_date: date, category: str, user: str, amount: float, note: str) -> None:
     connection = get_connection()
     connection.execute(
-        "INSERT INTO expenses (transaction_date, category, user, amount, note) VALUES (?, ?, ?, ?, ?)",
-        (transaction_date.isoformat(), category, user, amount, note.strip()),
+        text("INSERT INTO expenses (transaction_date, category, user, amount, note) VALUES (:date, :category, :user, :amount, :note)"),
+        {
+            "date": transaction_date.isoformat(),
+            "category": category,
+            "user": user,
+            "amount": amount,
+            "note": note.strip(),
+        },
     )
     connection.commit()
 
@@ -102,48 +124,62 @@ def add_expense(transaction_date: date, category: str, user: str, amount: float,
 def update_expense(expense_id: int, transaction_date: date, category: str, user: str, amount: float, note: str) -> None:
     connection = get_connection()
     connection.execute(
-        "UPDATE expenses SET transaction_date = ?, category = ?, user = ?, amount = ?, note = ? WHERE id = ?",
-        (transaction_date.isoformat(), category, user, amount, note.strip(), expense_id),
+        text("UPDATE expenses SET transaction_date = :date, category = :category, user = :user, amount = :amount, note = :note WHERE id = :id"),
+        {
+            "date": transaction_date.isoformat(),
+            "category": category,
+            "user": user,
+            "amount": amount,
+            "note": note.strip(),
+            "id": expense_id,
+        },
     )
     connection.commit()
 
 
 def delete_expense(expense_id: int) -> None:
     connection = get_connection()
-    connection.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
+    connection.execute(text("DELETE FROM expenses WHERE id = :id"), {"id": expense_id})
     connection.commit()
 
 
 def flush_expenses(start_date: date, end_date: date) -> int:
     connection = get_connection()
-    cursor = connection.execute(
-        "DELETE FROM expenses WHERE transaction_date BETWEEN ? AND ?",
-        (start_date.isoformat(), end_date.isoformat()),
+    result = connection.execute(
+        text("DELETE FROM expenses WHERE transaction_date BETWEEN :start AND :end"),
+        {"start": start_date.isoformat(), "end": end_date.isoformat()},
     )
     connection.commit()
-    return cursor.rowcount
+    return result.rowcount
 
 
 def load_expenses(start_date: date, end_date: date, categories: list[str], users: list[str]) -> pd.DataFrame:
-    category_placeholders = ", ".join("?" for _ in categories)
-    user_placeholders = ", ".join("?" for _ in users)
-    query = f"""SELECT id, transaction_date AS Date, category AS Category, user AS User, amount AS Amount, note AS Note
-        FROM expenses WHERE transaction_date BETWEEN ? AND ? AND category IN ({category_placeholders}) AND user IN ({user_placeholders})
+    category_placeholders = ", ".join(":cat" + str(i) for i in range(len(categories)))
+    user_placeholders = ", ".join(":user" + str(i) for i in range(len(users)))
+    query = text(
+        f"""SELECT id, transaction_date AS Date, category AS Category, user AS User, amount AS Amount, note AS Note
+        FROM expenses WHERE transaction_date BETWEEN :start AND :end AND category IN ({category_placeholders}) AND user IN ({user_placeholders})
         ORDER BY transaction_date DESC, id DESC"""
-    rows = get_connection().execute(query, [start_date.isoformat(), end_date.isoformat(), *categories, *users]).fetchall()
+    )
+    params = {"start": start_date.isoformat(), "end": end_date.isoformat()}
+    params.update({f"cat{i}": cat for i, cat in enumerate(categories)})
+    params.update({f"user{i}": user for i, user in enumerate(users)})
+    rows = get_connection().execute(query, params).fetchall()
     return pd.DataFrame(rows, columns=["ID", "Date", "Category", "User", "Amount", "Note"])
 
 
 def load_latest_expenses(limit: int = 100) -> pd.DataFrame:
-    query = """SELECT id, transaction_date AS Date, category AS Category, user AS User, amount AS Amount, note AS Note
-        FROM expenses ORDER BY transaction_date DESC, id DESC LIMIT ?"""
-    rows = get_connection().execute(query, (limit,)).fetchall()
+    query = text(
+        """SELECT id, transaction_date AS Date, category AS Category, user AS User, amount AS Amount, note AS Note
+        FROM expenses ORDER BY transaction_date DESC, id DESC LIMIT :limit"""
+    )
+    rows = get_connection().execute(query, {"limit": limit}).fetchall()
     return pd.DataFrame(rows, columns=["ID", "Date", "Category", "User", "Amount", "Note"])
 
 
 def get_default_report_start() -> date:
     connection = get_connection()
-    row = connection.execute("SELECT MIN(transaction_date) FROM expenses").fetchone()
+    row = connection.execute(text("SELECT MIN(transaction_date) FROM expenses")).fetchone()
     if row and row[0]:
         try:
             return date.fromisoformat(row[0])
@@ -155,7 +191,7 @@ def get_default_report_start() -> date:
 
 def get_default_report_end() -> date:
     connection = get_connection()
-    row = connection.execute("SELECT MAX(transaction_date) FROM expenses").fetchone()
+    row = connection.execute(text("SELECT MAX(transaction_date) FROM expenses")).fetchone()
     if row and row[0]:
         try:
             return date.fromisoformat(row[0])
