@@ -1,0 +1,180 @@
+"""Household Expense Tracker — Streamlit app with optional AI insights."""
+
+import os
+import sqlite3
+from datetime import date
+from pathlib import Path
+from typing import Optional
+
+import pandas as pd
+import streamlit as st
+from dotenv import load_dotenv
+from openai import OpenAI
+
+
+def ensure_streamlit_run() -> None:
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+    except ImportError:
+        return
+    if get_script_run_ctx() is None:
+        raise RuntimeError("Please launch this app with `streamlit run app.py` instead of `python app.py`.")
+
+
+ensure_streamlit_run()
+st.set_page_config(page_title="Household Expenses", page_icon="🏠", layout="wide")
+
+CATEGORIES = ["Grocery", "Internet", "Electricity", "Gas", "Petrol", "Maintenance", "Cooper", "Cooper Doctor", "Car Servicing", "Car Wash", "Alcohol", "Parking", "Festival", "Misc", "Medical", "FTH"]
+DATABASE_PATH = Path(__file__).with_name("expenses.db")
+
+
+@st.cache_resource
+def get_connection() -> sqlite3.Connection:
+    connection = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS expenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transaction_date TEXT NOT NULL,
+            category TEXT NOT NULL,
+            amount REAL NOT NULL CHECK(amount > 0),
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+    connection.commit()
+    return connection
+
+
+def get_api_key() -> Optional[str]:
+    """Read .env locally or Streamlit secrets after deployment."""
+    if key := os.getenv("OPENAI_API_KEY"):
+        return key
+    try:
+        return st.secrets["OPENAI_API_KEY"]
+    except (FileNotFoundError, KeyError):
+        return None
+
+
+def add_expense(transaction_date: date, category: str, amount: float, note: str) -> None:
+    connection = get_connection()
+    connection.execute(
+        "INSERT INTO expenses (transaction_date, category, amount, note) VALUES (?, ?, ?, ?)",
+        (transaction_date.isoformat(), category, amount, note.strip()),
+    )
+    connection.commit()
+
+
+def load_expenses(start_date: date, end_date: date, categories: list[str]) -> pd.DataFrame:
+    placeholders = ", ".join("?" for _ in categories)
+    query = f"""SELECT id, transaction_date AS Date, category AS Category, amount AS Amount, note AS Note
+        FROM expenses WHERE transaction_date BETWEEN ? AND ? AND category IN ({placeholders})
+        ORDER BY transaction_date DESC, id DESC"""
+    rows = get_connection().execute(query, [start_date.isoformat(), end_date.isoformat(), *categories]).fetchall()
+    return pd.DataFrame(rows, columns=["ID", "Date", "Category", "Amount", "Note"])
+
+
+def report_context(expenses: pd.DataFrame, report_name: str) -> str:
+    """Send a limited snapshot of the selected report to the AI, not the full database."""
+    category_totals = expenses.groupby("Category", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
+    daily_totals = expenses.groupby("Date", as_index=False)["Amount"].sum().sort_values("Date")
+    return f"""Report name: {report_name}
+Transactions: {len(expenses)}
+Total spend: {expenses['Amount'].sum():.2f}
+Category totals:\n{category_totals.to_csv(index=False)}
+Daily totals:\n{daily_totals.to_csv(index=False)}
+Recent transactions (up to 100):\n{expenses.head(100).to_csv(index=False)}"""
+
+
+def ask_agent(api_key: str, question: str, context: str) -> str:
+    response = OpenAI(api_key=api_key).chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0,
+        messages=[
+            {"role": "system", "content": "You are a household-expense analysis assistant. Answer only from the supplied report data. If data cannot answer a question, say so. Be concise, use currency-neutral amounts, avoid financial, medical, or tax advice, and end with exactly three useful follow-up questions."},
+            {"role": "user", "content": f"REPORT DATA:\n{context}\n\nQUESTION:\n{question}"},
+        ],
+    )
+    return response.choices[0].message.content or "No response received."
+
+
+def main() -> None:
+    load_dotenv()
+    get_connection()
+    st.title("🏠 Household Expense Tracker")
+    st.caption("Record daily spending, build custom reports, and ask the AI about the selected data.")
+
+    with st.sidebar:
+        st.header("Add an expense")
+        with st.form("expense_form", clear_on_submit=True):
+            transaction_date = st.date_input("Transaction date", value=date.today())
+            category = st.selectbox("Category", CATEGORIES)
+            amount = st.number_input("Amount", min_value=0.01, step=1.0, format="%.2f")
+            note = st.text_input("Note (optional)", placeholder="e.g. weekly vegetables")
+            submitted = st.form_submit_button("Save expense", use_container_width=True)
+        if submitted:
+            add_expense(transaction_date, category, amount, note)
+            st.success("Expense saved.")
+
+        st.divider()
+        st.header("Report filters")
+        today = date.today()
+        report_start = st.date_input("From", value=today.replace(day=1), key="report_start")
+        report_end = st.date_input("To", value=today, key="report_end")
+        selected_categories = st.multiselect("Categories", CATEGORIES, default=CATEGORIES)
+        report_name = st.text_input("Report name", value="Household expense report")
+
+    if report_start > report_end:
+        st.error("The report start date must be on or before the end date.")
+        return
+    if not selected_categories:
+        st.warning("Choose at least one category to generate a report.")
+        return
+
+    expenses = load_expenses(report_start, report_end, selected_categories)
+    st.subheader(report_name)
+    st.caption(f"{report_start:%d %b %Y} – {report_end:%d %b %Y} · {', '.join(selected_categories)}")
+    total = expenses["Amount"].sum() if not expenses.empty else 0.0
+    average = expenses["Amount"].mean() if not expenses.empty else 0.0
+    highest = expenses.loc[expenses["Amount"].idxmax(), "Category"] if not expenses.empty else "—"
+    col_one, col_two, col_three = st.columns(3)
+    col_one.metric("Total spent", f"{total:,.2f}")
+    col_two.metric("Transactions", len(expenses))
+    col_three.metric("Largest category", highest)
+
+    report_tab, transactions_tab, agent_tab = st.tabs(["Report", "Transactions", "AI expense agent"])
+    with report_tab:
+        if expenses.empty:
+            st.info("No expenses match these filters. Add an expense from the sidebar.")
+        else:
+            category_totals = expenses.groupby("Category", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
+            st.bar_chart(category_totals, x="Category", y="Amount")
+            st.dataframe(category_totals, hide_index=True, use_container_width=True)
+            st.download_button("Download this report as CSV", data=expenses.to_csv(index=False).encode("utf-8"), file_name="household_expenses_report.csv", mime="text/csv")
+            st.caption(f"Average transaction amount: {average:,.2f}")
+
+    with transactions_tab:
+        st.dataframe(expenses.drop(columns="ID"), hide_index=True, use_container_width=True)
+
+    with agent_tab:
+        st.write("Ask about the report currently selected above. The AI receives only this report’s data.")
+        common_questions = ["Which categories cost the most, and what should I review?", "How did spending change over the selected period?", "What are the largest individual expenses?", "Which dates had unusually high spending?"]
+        question_choice = st.selectbox("Common questions", ["Write my own question"] + common_questions)
+        custom_question = st.text_area("Your question", placeholder="e.g. How much did I spend on grocery and petrol?")
+        question = custom_question.strip() or (question_choice if question_choice != "Write my own question" else "")
+        if st.button("Ask AI agent", type="primary", disabled=expenses.empty):
+            if not question:
+                st.warning("Choose a common question or write one of your own.")
+            elif not (api_key := get_api_key()):
+                st.error("OPENAI_API_KEY is missing. Add it to .env or Streamlit secrets first.")
+            else:
+                with st.spinner("Reading the selected report…"):
+                    try:
+                        answer = ask_agent(api_key, question, report_context(expenses, report_name))
+                    except Exception:
+                        st.error("The AI agent could not respond. Check the API key and network connection.")
+                    else:
+                        st.markdown(answer)
+
+
+if __name__ == "__main__":
+    main()
