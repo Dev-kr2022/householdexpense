@@ -1,6 +1,7 @@
 """Household Expense Tracker — Streamlit app with optional AI insights."""
 
 import os
+import sqlite3
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -9,16 +10,23 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Connection
+
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
+
+try:
+    import psycopg
+except ImportError:  # pragma: no cover - optional dependency in local sqlite setups
+    psycopg = None
 
 
 def ensure_streamlit_run() -> None:
+    if os.getenv("STREAMLIT_TEST_MODE") == "1":
+        return
     try:
         from streamlit.runtime.scriptrunner import get_script_run_ctx
     except ImportError:
         return
-    if get_script_run_ctx() is None:
+    if __name__ == "__main__" and get_script_run_ctx() is None:
         raise RuntimeError("Please launch this app with `streamlit run app.py` instead of `python app.py`.")
 
 
@@ -28,46 +36,76 @@ st.set_page_config(page_title="Household Expenses", page_icon="🏠", layout="wi
 CATEGORIES = ["Grocery", "Internet", "Electricity", "Gas", "Petrol", "Maintenance", "Cooper", "Cooper Doctor", "Car Servicing", "Car Wash", "Alcohol", "Parking", "Festival", "Misc", "Medical", "FTH"]
 USERS = ["RN", "DK"]
 ADMIN_PASSWORD = "2498"
-DATABASE_PATH = Path(__file__).with_name("expenses.db")
+DATABASE_PATH = Path(os.getenv("SQLITE_PATH", str(Path(__file__).with_name("expenses.db"))))
+POSTGRES_TABLE_SQL = """CREATE TABLE IF NOT EXISTS expenses (
+    id BIGSERIAL PRIMARY KEY,
+    transaction_date TEXT NOT NULL,
+    category TEXT NOT NULL,
+    expense_user TEXT NOT NULL DEFAULT 'RN',
+    amount REAL NOT NULL CHECK(amount > 0),
+    note TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+)"""
+SQLITE_TABLE_SQL = """CREATE TABLE IF NOT EXISTS expenses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    transaction_date TEXT NOT NULL,
+    category TEXT NOT NULL,
+    expense_user TEXT NOT NULL DEFAULT 'RN',
+    amount REAL NOT NULL CHECK(amount > 0),
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+)"""
 
 
 def get_database_url() -> Optional[str]:
-    if db_url := os.getenv("DATABASE_URL"):
-        return db_url
+    if url := os.getenv("DATABASE_URL"):
+        return url
+    if url := os.getenv("SUPABASE_DATABASE_URL"):
+        return url
     try:
         return st.secrets["DATABASE_URL"]
-    except (AttributeError, KeyError):
+    except Exception:
         return None
 
 
-@st.cache_resource
-def get_engine():
-    db_url = get_database_url()
-    if db_url:
-        return create_engine(db_url, future=True)
-    return create_engine(
-        f"sqlite:///{DATABASE_PATH}",
-        future=True,
-        connect_args={"check_same_thread": False},
-    )
+def get_database_kind() -> str:
+    return "postgres" if get_database_url() else "sqlite"
 
 
-@st.cache_resource
-def get_connection() -> Connection:
-    connection = get_engine().connect()
-    connection.execute(
-        text(
-            """CREATE TABLE IF NOT EXISTS expenses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                transaction_date TEXT NOT NULL,
-                category TEXT NOT NULL,
-                user TEXT NOT NULL DEFAULT 'RN',
-                amount REAL NOT NULL CHECK(amount > 0),
-                note TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )"""
-        )
-    )
+class PostgresConnectionAdapter:
+    def __init__(self, connection):
+        self.connection = connection
+        self._cursor = None
+
+    def execute(self, query, params=None):
+        self._cursor = self.connection.cursor()
+        translated_query = query.replace("?", "%s")
+        self._cursor.execute(translated_query, params)
+        return self._cursor
+
+    def commit(self):
+        self.connection.commit()
+
+    def close(self):
+        self.connection.close()
+
+
+def get_connection():
+    if get_database_kind() == "postgres":
+        if psycopg is None:
+            raise RuntimeError("Install psycopg[binary] to use a Supabase/Postgres database.")
+        try:
+            connection = psycopg.connect(get_database_url(), sslmode="require")
+            with connection.cursor() as cursor:
+                cursor.execute(POSTGRES_TABLE_SQL)
+            connection.commit()
+            return PostgresConnectionAdapter(connection)
+        except Exception as exc:
+            st.warning(f"Supabase connection failed ({exc}); falling back to local SQLite database.")
+
+    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
+    connection.execute(SQLITE_TABLE_SQL)
     connection.commit()
     return connection
 
@@ -78,7 +116,7 @@ def get_api_key() -> Optional[str]:
         return key
     try:
         return st.secrets["OPENAI_API_KEY"]
-    except (FileNotFoundError, KeyError):
+    except Exception:
         return None
 
 
@@ -114,14 +152,8 @@ def authenticate_app() -> bool:
 def add_expense(transaction_date: date, category: str, user: str, amount: float, note: str) -> None:
     connection = get_connection()
     connection.execute(
-        text("INSERT INTO expenses (transaction_date, category, user, amount, note) VALUES (:date, :category, :user, :amount, :note)"),
-        {
-            "date": transaction_date.isoformat(),
-            "category": category,
-            "user": user,
-            "amount": amount,
-            "note": note.strip(),
-        },
+        "INSERT INTO expenses (transaction_date, category, expense_user, amount, note) VALUES (?, ?, ?, ?, ?)",
+        (transaction_date.isoformat(), category, user, amount, note.strip()),
     )
     connection.commit()
 
@@ -129,62 +161,57 @@ def add_expense(transaction_date: date, category: str, user: str, amount: float,
 def update_expense(expense_id: int, transaction_date: date, category: str, user: str, amount: float, note: str) -> None:
     connection = get_connection()
     connection.execute(
-        text("UPDATE expenses SET transaction_date = :date, category = :category, user = :user, amount = :amount, note = :note WHERE id = :id"),
-        {
-            "date": transaction_date.isoformat(),
-            "category": category,
-            "user": user,
-            "amount": amount,
-            "note": note.strip(),
-            "id": expense_id,
-        },
+        "UPDATE expenses SET transaction_date = ?, category = ?, expense_user = ?, amount = ?, note = ? WHERE id = ?",
+        (transaction_date.isoformat(), category, user, amount, note.strip(), expense_id),
     )
     connection.commit()
 
 
 def delete_expense(expense_id: int) -> None:
     connection = get_connection()
-    connection.execute(text("DELETE FROM expenses WHERE id = :id"), {"id": expense_id})
+    connection.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
     connection.commit()
 
 
 def flush_expenses(start_date: date, end_date: date) -> int:
     connection = get_connection()
-    result = connection.execute(
-        text("DELETE FROM expenses WHERE transaction_date BETWEEN :start AND :end"),
-        {"start": start_date.isoformat(), "end": end_date.isoformat()},
+    cursor = connection.execute(
+        "DELETE FROM expenses WHERE transaction_date BETWEEN ? AND ?",
+        (start_date.isoformat(), end_date.isoformat()),
     )
     connection.commit()
-    return result.rowcount
+    return cursor.rowcount
+
+
+def build_expense_query(categories: list[str], users: list[str], is_postgres: bool = False) -> tuple[str, list[str]]:
+    placeholder = "%s" if is_postgres else "?"
+    category_placeholders = ", ".join(placeholder for _ in categories)
+    user_placeholders = ", ".join(placeholder for _ in users)
+    query = f"""SELECT id, transaction_date AS Date, category AS Category, expense_user AS User, amount AS Amount, note AS Note
+        FROM expenses WHERE transaction_date BETWEEN {placeholder} AND {placeholder} AND category IN ({category_placeholders}) AND expense_user IN ({user_placeholders})
+        ORDER BY transaction_date DESC, id DESC"""
+    params = [*categories, *users]
+    return query, params
 
 
 def load_expenses(start_date: date, end_date: date, categories: list[str], users: list[str]) -> pd.DataFrame:
-    category_placeholders = ", ".join(":cat" + str(i) for i in range(len(categories)))
-    user_placeholders = ", ".join(":user" + str(i) for i in range(len(users)))
-    query = text(
-        f"""SELECT id, transaction_date AS Date, category AS Category, user AS User, amount AS Amount, note AS Note
-        FROM expenses WHERE transaction_date BETWEEN :start AND :end AND category IN ({category_placeholders}) AND user IN ({user_placeholders})
-        ORDER BY transaction_date DESC, id DESC"""
-    )
-    params = {"start": start_date.isoformat(), "end": end_date.isoformat()}
-    params.update({f"cat{i}": cat for i, cat in enumerate(categories)})
-    params.update({f"user{i}": user for i, user in enumerate(users)})
-    rows = get_connection().execute(query, params).fetchall()
+    is_postgres = get_database_kind() == "postgres"
+    query, params = build_expense_query(categories, users, is_postgres=is_postgres)
+    query_params = [start_date.isoformat(), end_date.isoformat(), *params]
+    rows = get_connection().execute(query, query_params).fetchall()
     return pd.DataFrame(rows, columns=["ID", "Date", "Category", "User", "Amount", "Note"])
 
 
 def load_latest_expenses(limit: int = 100) -> pd.DataFrame:
-    query = text(
-        """SELECT id, transaction_date AS Date, category AS Category, user AS User, amount AS Amount, note AS Note
-        FROM expenses ORDER BY transaction_date DESC, id DESC LIMIT :limit"""
-    )
-    rows = get_connection().execute(query, {"limit": limit}).fetchall()
+    query = """SELECT id, transaction_date AS Date, category AS Category, expense_user AS User, amount AS Amount, note AS Note
+        FROM expenses ORDER BY transaction_date DESC, id DESC LIMIT ?"""
+    rows = get_connection().execute(query, (limit,)).fetchall()
     return pd.DataFrame(rows, columns=["ID", "Date", "Category", "User", "Amount", "Note"])
 
 
 def get_default_report_start() -> date:
     connection = get_connection()
-    row = connection.execute(text("SELECT MIN(transaction_date) FROM expenses")).fetchone()
+    row = connection.execute("SELECT MIN(transaction_date) FROM expenses").fetchone()
     if row and row[0]:
         try:
             return date.fromisoformat(row[0])
@@ -196,7 +223,7 @@ def get_default_report_start() -> date:
 
 def get_default_report_end() -> date:
     connection = get_connection()
-    row = connection.execute(text("SELECT MAX(transaction_date) FROM expenses")).fetchone()
+    row = connection.execute("SELECT MAX(transaction_date) FROM expenses").fetchone()
     if row and row[0]:
         try:
             return date.fromisoformat(row[0])
@@ -274,13 +301,6 @@ def rerun_app() -> None:
 
 def main() -> None:
     load_dotenv()
-    db_url = get_database_url()
-    if db_url is None:
-        st.warning(
-            "No persistent database is configured. "
-            "Transactions will be stored only in the local container and may be lost after a restart. "
-            "Set DATABASE_URL in Streamlit secrets or environment variables to keep data persistent."
-        )
     get_connection()
     if not authenticate_app():
         return

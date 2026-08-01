@@ -12,12 +12,14 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-streamlit run app.py
+streamlit run app.py --server.address=0.0.0.0 --server.port=8501
 ```
 
 Add an OpenAI key to `.env` only if you want AI report insights. Expense entry,
 reports, and CSV download work without an API key. The app opens at
-`http://localhost:8501` and stores data in the local `expenses.db` SQLite file.
+`http://localhost:8501` on the Mac and can also be accessed from another
+device on the same network at `http://192.168.68.58:8501` while the Mac is
+running the app.
 
 ## Features
 
@@ -36,12 +38,22 @@ For Streamlit Cloud or any hosted environment, set `DATABASE_URL` in Streamlit
 secrets or your environment so the app can connect to a persistent database.
 If you use Postgres, also install the appropriate driver such as `psycopg[binary]`.
 
+If you run the app locally on your Mac, you can optionally specify a custom
+SQLite file path with `SQLITE_PATH`:
+
+```bash
+export SQLITE_PATH="/Users/yourname/Drive/expenses.db"
+streamlit run app.py
+```
+
 Example Streamlit secrets configuration (`.streamlit/secrets.toml`):
 
 ```toml
-DATABASE_URL = "postgresql://user:password@hostname:5432/database"
+DATABASE_URL = "postgresql://postgres:your-password@db.project-ref.supabase.co:5432/postgres"
 OPENAI_API_KEY = "sk-..."
 ```
 
-On Streamlit Cloud, add `DATABASE_URL` under App settings → Secrets. After that,
-re-deploy the app and it will persist transactions in the remote database.
+For Supabase, use the connection string from Project Settings → Database → Connection
+string. In Streamlit Cloud, add `DATABASE_URL` under App settings → Secrets and
+re-deploy. The app will automatically switch from SQLite to Postgres when that
+value is present.
