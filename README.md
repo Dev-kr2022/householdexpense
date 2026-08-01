@@ -35,3 +35,13 @@ restarted and their local files lost.
 For Streamlit Cloud or any hosted environment, set `DATABASE_URL` in Streamlit
 secrets or your environment so the app can connect to a persistent database.
 If you use Postgres, also install the appropriate driver such as `psycopg[binary]`.
+
+Example Streamlit secrets configuration (`.streamlit/secrets.toml`):
+
+```toml
+DATABASE_URL = "postgresql://user:password@hostname:5432/database"
+OPENAI_API_KEY = "sk-..."
+```
+
+On Streamlit Cloud, add `DATABASE_URL` under App settings → Secrets. After that,
+re-deploy the app and it will persist transactions in the remote database.
