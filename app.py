@@ -32,7 +32,12 @@ DATABASE_PATH = Path(__file__).with_name("expenses.db")
 
 
 def get_database_url() -> Optional[str]:
-    return os.getenv("DATABASE_URL")
+    if db_url := os.getenv("DATABASE_URL"):
+        return db_url
+    try:
+        return st.secrets["DATABASE_URL"]
+    except (AttributeError, KeyError):
+        return None
 
 
 @st.cache_resource
@@ -269,6 +274,13 @@ def rerun_app() -> None:
 
 def main() -> None:
     load_dotenv()
+    db_url = get_database_url()
+    if db_url is None:
+        st.warning(
+            "No persistent database is configured. "
+            "Transactions will be stored only in the local container and may be lost after a restart. "
+            "Set DATABASE_URL in Streamlit secrets or environment variables to keep data persistent."
+        )
     get_connection()
     if not authenticate_app():
         return
