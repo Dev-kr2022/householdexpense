@@ -25,6 +25,7 @@ ensure_streamlit_run()
 st.set_page_config(page_title="Household Expenses", page_icon="🏠", layout="wide")
 
 CATEGORIES = ["Grocery", "Internet", "Electricity", "Gas", "Petrol", "Maintenance", "Cooper", "Cooper Doctor", "Car Servicing", "Car Wash", "Alcohol", "Parking", "Festival", "Misc", "Medical", "FTH"]
+ADMIN_PASSWORD = "2498"
 DATABASE_PATH = Path(__file__).with_name("expenses.db")
 
 
@@ -55,6 +56,35 @@ def get_api_key() -> Optional[str]:
         return None
 
 
+def get_admin_password() -> str:
+    return ADMIN_PASSWORD
+
+
+def authenticate_app() -> bool:
+    if "logged_in" not in st.session_state:
+        st.session_state.logged_in = False
+        st.session_state.login_error = ""
+
+    if st.session_state.logged_in:
+        return True
+
+    st.title("🔒 Household Expense Tracker — Login")
+    st.write("Enter the admin password to open the app.")
+    with st.form("login_form", clear_on_submit=True):
+        login_password = st.text_input("Admin password", type="password", key="login_password")
+        open_app = st.form_submit_button("Open app")
+    if open_app:
+        if login_password == get_admin_password():
+            st.session_state.logged_in = True
+            rerun_app()
+            return False
+        st.session_state.login_error = "Invalid admin password."
+
+    if st.session_state.login_error:
+        st.error(st.session_state.login_error)
+    return False
+
+
 def add_expense(transaction_date: date, category: str, amount: float, note: str) -> None:
     connection = get_connection()
     connection.execute(
@@ -62,6 +92,31 @@ def add_expense(transaction_date: date, category: str, amount: float, note: str)
         (transaction_date.isoformat(), category, amount, note.strip()),
     )
     connection.commit()
+
+
+def update_expense(expense_id: int, transaction_date: date, category: str, amount: float, note: str) -> None:
+    connection = get_connection()
+    connection.execute(
+        "UPDATE expenses SET transaction_date = ?, category = ?, amount = ?, note = ? WHERE id = ?",
+        (transaction_date.isoformat(), category, amount, note.strip(), expense_id),
+    )
+    connection.commit()
+
+
+def delete_expense(expense_id: int) -> None:
+    connection = get_connection()
+    connection.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
+    connection.commit()
+
+
+def flush_expenses(start_date: date, end_date: date) -> int:
+    connection = get_connection()
+    cursor = connection.execute(
+        "DELETE FROM expenses WHERE transaction_date BETWEEN ? AND ?",
+        (start_date.isoformat(), end_date.isoformat()),
+    )
+    connection.commit()
+    return cursor.rowcount
 
 
 def load_expenses(start_date: date, end_date: date, categories: list[str]) -> pd.DataFrame:
@@ -97,9 +152,23 @@ def ask_agent(api_key: str, question: str, context: str) -> str:
     return response.choices[0].message.content or "No response received."
 
 
+def rerun_app() -> None:
+    if hasattr(st, "experimental_rerun"):
+        st.experimental_rerun()
+        return
+    try:
+        from streamlit.runtime.scriptrunner import RerunException
+        from streamlit.runtime.scriptrunner_utils.script_requests import RerunData
+    except ImportError:
+        raise RuntimeError("Unable to rerun Streamlit app. Please refresh the browser.")
+    raise RerunException(RerunData())
+
+
 def main() -> None:
     load_dotenv()
     get_connection()
+    if not authenticate_app():
+        return
     st.title("🏠 Household Expense Tracker")
     st.caption("Record daily spending, build custom reports, and ask the AI about the selected data.")
 
@@ -154,6 +223,56 @@ def main() -> None:
 
     with transactions_tab:
         st.dataframe(expenses.drop(columns="ID"), hide_index=True, use_container_width=True)
+
+        st.divider()
+        st.subheader("Edit or delete a selected record")
+        if expenses.empty:
+            st.info("No records match the current filters.")
+        else:
+            record_ids = expenses["ID"].tolist()
+            selected_id = st.selectbox(
+                "Choose a record to edit or delete",
+                record_ids,
+                format_func=lambda record_id: f"ID {record_id} — {expenses.loc[expenses['ID'] == record_id, 'Date'].iloc[0]} / {expenses.loc[expenses['ID'] == record_id, 'Category'].iloc[0]} / {expenses.loc[expenses['ID'] == record_id, 'Amount'].iloc[0]:.2f}",
+            )
+            selected = expenses.loc[expenses["ID"] == selected_id].iloc[0]
+
+            with st.form("edit_record_form", clear_on_submit=False):
+                edit_date = st.date_input("Transaction date", value=pd.to_datetime(selected["Date"]).date(), key="edit_date")
+                edit_category = st.selectbox("Category", CATEGORIES, index=CATEGORIES.index(selected["Category"]))
+                edit_amount = st.number_input("Amount", min_value=0.01, step=1.0, value=float(selected["Amount"]), format="%.2f", key="edit_amount")
+                edit_note = st.text_input("Note", value=str(selected["Note"]), key="edit_note")
+                update_record = st.form_submit_button("Update record")
+            if update_record:
+                update_expense(selected_id, edit_date, edit_category, edit_amount, edit_note)
+                st.success("Record updated.")
+                rerun_app()
+
+            with st.form("delete_record_form", clear_on_submit=False):
+                delete_password = st.text_input("Admin password", type="password", key="delete_password")
+                delete_record = st.form_submit_button("Delete record")
+            if delete_record:
+                if delete_password != get_admin_password():
+                    st.error("Admin password is incorrect. Record was not deleted.")
+                else:
+                    delete_expense(selected_id)
+                    st.success("Record deleted.")
+                    rerun_app()
+
+        st.divider()
+        st.subheader("Flush records by date")
+        flush_start = st.date_input("Flush from", value=report_start, key="flush_start")
+        flush_end = st.date_input("Flush to", value=report_end, key="flush_end")
+        if st.button("Delete records in date range"):
+            if flush_start > flush_end:
+                st.error("The start date must be on or before the end date.")
+            else:
+                deleted = flush_expenses(flush_start, flush_end)
+                if deleted:
+                    st.success(f"Deleted {deleted} record(s) from {flush_start:%Y-%m-%d} to {flush_end:%Y-%m-%d}.")
+                else:
+                    st.info("No records found in that range.")
+                rerun_app()
 
     with agent_tab:
         st.write("Ask about the report currently selected above. The AI receives only this report’s data.")
