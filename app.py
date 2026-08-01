@@ -141,6 +141,29 @@ def load_latest_expenses(limit: int = 100) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["ID", "Date", "Category", "User", "Amount", "Note"])
 
 
+def get_default_report_start() -> date:
+    connection = get_connection()
+    row = connection.execute("SELECT MIN(transaction_date) FROM expenses").fetchone()
+    if row and row[0]:
+        try:
+            return date.fromisoformat(row[0])
+        except ValueError:
+            pass
+    today = date.today()
+    return today.replace(day=1)
+
+
+def get_default_report_end() -> date:
+    connection = get_connection()
+    row = connection.execute("SELECT MAX(transaction_date) FROM expenses").fetchone()
+    if row and row[0]:
+        try:
+            return date.fromisoformat(row[0])
+        except ValueError:
+            pass
+    return date.today()
+
+
 def report_context(expenses: pd.DataFrame, report_name: str, split_pct: int, actual_rn: float, actual_dk: float, rn_share: float, dk_share: float) -> str:
     """Send a limited snapshot of the selected report to the AI, not the full database."""
     category_totals = expenses.groupby("Category", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
@@ -231,12 +254,19 @@ def main() -> None:
 
         st.divider()
         st.header("Report filters")
-        today = date.today()
-        report_start = st.date_input("From", value=today.replace(day=1), key="report_start")
-        report_end = st.date_input("To", value=today, key="report_end")
-        selected_categories = st.multiselect("Categories", CATEGORIES, default=CATEGORIES)
-        selected_users = st.multiselect("Users", USERS, default=USERS)
-        report_name = st.text_input("Report name", value="Household expense report")
+        default_report_start = get_default_report_start()
+        default_report_end = get_default_report_end()
+        if st.button("Reset filters to saved transaction range"):
+            st.session_state.report_start = default_report_start
+            st.session_state.report_end = default_report_end
+            st.session_state.selected_categories = CATEGORIES
+            st.session_state.selected_users = USERS
+            st.experimental_rerun()
+        report_start = st.date_input("From", value=default_report_start, key="report_start")
+        report_end = st.date_input("To", value=default_report_end, key="report_end")
+        selected_categories = st.multiselect("Categories", CATEGORIES, default=CATEGORIES, key="selected_categories")
+        selected_users = st.multiselect("Users", USERS, default=USERS, key="selected_users")
+        report_name = st.text_input("Report name", value="Household expense report", key="report_name")
 
     if report_start > report_end:
         st.error("The report start date must be on or before the end date.")
