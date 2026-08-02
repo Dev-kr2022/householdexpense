@@ -37,11 +37,12 @@ Then open:
 
 ### 3. Sign in
 
-The app is protected by an admin password.
+The app is protected by an admin password. Set `ADMIN_PASSWORD` in your local
+`.env` file or in Streamlit secrets before starting the app.
 
-- Default password: 2498
-
-Enter it to open the full app.
+```env
+ADMIN_PASSWORD=choose_a_secure_password
+```
 
 ## Optional setup
 

@@ -33,9 +33,8 @@ def ensure_streamlit_run() -> None:
 ensure_streamlit_run()
 st.set_page_config(page_title="Household Expenses", page_icon="🏠", layout="wide")
 
-CATEGORIES = ["Grocery", "Internet", "Electricity", "Gas", "Petrol", "Maintenance", "Cooper", "Cooper Doctor", "Car Servicing", "Car Wash", "Alcohol", "Parking", "Festival", "Misc", "Medical", "FTH"]
+CATEGORIES = ["Grocery", "Food", "House Help", "Internet", "Electricity", "Gas", "Petrol", "Maintenance", "Cooper", "Cooper Doctor", "Car Servicing", "Car Wash", "Alcohol", "Parking", "Festival", "Misc", "Medical", "FTH"]
 USERS = ["RN", "DK"]
-ADMIN_PASSWORD = "2498"
 DATABASE_PATH = Path(os.getenv("SQLITE_PATH", str(Path(__file__).with_name("expenses.db"))))
 POSTGRES_TABLE_SQL = """CREATE TABLE IF NOT EXISTS expenses (
     id BIGSERIAL PRIMARY KEY,
@@ -120,8 +119,13 @@ def get_api_key() -> Optional[str]:
         return None
 
 
-def get_admin_password() -> str:
-    return ADMIN_PASSWORD
+def get_admin_password() -> Optional[str]:
+    if password := os.getenv("ADMIN_PASSWORD"):
+        return password
+    try:
+        return st.secrets["ADMIN_PASSWORD"]
+    except Exception:
+        return None
 
 
 def authenticate_app() -> bool:
@@ -132,13 +136,18 @@ def authenticate_app() -> bool:
     if st.session_state.logged_in:
         return True
 
+    admin_password = get_admin_password()
+    if not admin_password:
+        st.error("ADMIN_PASSWORD is not configured. Add it to .env or Streamlit secrets.")
+        return False
+
     st.title("🔒 Household Expense Tracker — Login")
     st.write("Enter the admin password to open the app.")
     with st.form("login_form", clear_on_submit=True):
         login_password = st.text_input("Admin password", type="password", key="login_password")
         open_app = st.form_submit_button("Open app")
     if open_app:
-        if login_password == get_admin_password():
+        if login_password == admin_password:
             st.session_state.logged_in = True
             rerun_app()
             return False
@@ -230,6 +239,28 @@ def get_default_report_end() -> date:
         except ValueError:
             pass
     return date.today()
+
+
+def build_monthly_category_report(expenses: pd.DataFrame) -> pd.DataFrame:
+    if expenses.empty:
+        return pd.DataFrame(columns=["Month", "Category", "Amount"])
+
+    monthly_expenses = expenses.copy()
+    monthly_expenses["Month"] = pd.to_datetime(monthly_expenses["Date"]).dt.to_period("M").astype(str)
+    monthly_expenses = monthly_expenses.groupby(["Month", "Category"], as_index=False)["Amount"].sum()
+    return monthly_expenses.sort_values(["Month", "Category"]).reset_index(drop=True)
+
+
+def build_monthly_average_summary(expenses: pd.DataFrame) -> pd.DataFrame:
+    if expenses.empty:
+        return pd.DataFrame(columns=["Month", "Average Expense", "Transaction Count"])
+
+    monthly_expenses = expenses.copy()
+    monthly_expenses["Month"] = pd.to_datetime(monthly_expenses["Date"]).dt.to_period("M").astype(str)
+    summary = monthly_expenses.groupby("Month", as_index=False)["Amount"].mean().rename(columns={"Amount": "Average Expense"})
+    summary["Average Expense"] = summary["Average Expense"].round(2)
+    summary["Transaction Count"] = monthly_expenses.groupby("Month").size().values
+    return summary.sort_values("Month").reset_index(drop=True)
 
 
 def report_context(expenses: pd.DataFrame, report_name: str, split_pct: int, actual_rn: float, actual_dk: float, rn_share: float, dk_share: float) -> str:
@@ -349,6 +380,22 @@ def main() -> None:
     expenses = load_expenses(report_start, report_end, selected_categories, selected_users)
     st.subheader(report_name)
     st.caption(f"{report_start:%d %b %Y} – {report_end:%d %b %Y} · {', '.join(selected_categories)}")
+
+    month_start = report_start.replace(day=1)
+    month_end = report_end.replace(day=1)
+    available_months = list(pd.date_range(month_start, month_end, freq="MS"))
+    current_month = date.today().replace(day=1)
+    default_month = min(max(current_month, month_start), month_end)
+    if "selected_month" not in st.session_state:
+        st.session_state.selected_month = default_month
+    selected_month = st.selectbox(
+        "Select month for monthly summaries",
+        options=available_months,
+        format_func=lambda value: value.strftime("%b %Y"),
+        key="selected_month",
+    )
+    selected_month_str = selected_month.strftime("%Y-%m")
+    monthly_expenses = expenses[expenses["Date"].str.startswith(selected_month_str, na=False)] if not expenses.empty else pd.DataFrame()
     total = expenses["Amount"].sum() if not expenses.empty else 0.0
     average = expenses["Amount"].mean() if not expenses.empty else 0.0
     highest = expenses.loc[expenses["Amount"].idxmax(), "Category"] if not expenses.empty else "—"
@@ -363,42 +410,69 @@ def main() -> None:
             st.info("No expenses match these filters. Add an expense from the sidebar.")
         else:
             category_totals = expenses.groupby("Category", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
-            user_totals = expenses.groupby("User", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
             st.bar_chart(category_totals, x="Category", y="Amount")
             st.dataframe(category_totals, hide_index=True, use_container_width=True)
-            st.markdown("### Total by user")
-            st.dataframe(user_totals, hide_index=True, use_container_width=True)
+            st.markdown(f"### Total amount paid by user in {selected_month.strftime('%b %Y')}")
+            if monthly_expenses.empty:
+                st.info("No expenses found for the selected month.")
+            else:
+                monthly_user_totals = monthly_expenses.groupby("User", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
+                st.dataframe(monthly_user_totals, hide_index=True, use_container_width=True)
             st.download_button("Download this report as CSV", data=expenses.to_csv(index=False).encode("utf-8"), file_name="household_expenses_report.csv", mime="text/csv")
             st.caption(f"Average transaction amount: {average:,.2f}")
 
+            st.markdown("### Monthly expense by category")
+            monthly_category_report = build_monthly_category_report(expenses)
+            if monthly_category_report.empty:
+                st.info("No monthly breakdown is available for the selected period.")
+            else:
+                monthly_category_pivot = monthly_category_report.pivot(index="Month", columns="Category", values="Amount").fillna(0)
+                monthly_category_pivot["Total"] = monthly_category_pivot.sum(axis=1)
+                monthly_category_pivot = monthly_category_pivot.sort_index()
+                monthly_category_pivot.index = monthly_category_pivot.index.map(lambda value: pd.to_datetime(value).strftime("%b-%y"))
+                transposed_grid = monthly_category_pivot.T
+                transposed_grid["Total"] = transposed_grid.sum(axis=1)
+                transposed_grid = transposed_grid.sort_index()
+                st.dataframe(transposed_grid, hide_index=False, use_container_width=True)
+
+            st.markdown("### Average expense per month")
+            monthly_average_summary = build_monthly_average_summary(expenses)
+            if monthly_average_summary.empty:
+                st.info("No monthly average data is available for the selected period.")
+            else:
+                st.line_chart(monthly_average_summary.set_index("Month")["Average Expense"])
+                st.dataframe(monthly_average_summary, hide_index=True, use_container_width=True)
+
             split_pct = st.number_input("RN percent share of total", min_value=0, max_value=100, value=40, step=1, format="%d")
-            rn_share = total * split_pct / 100
-            dk_share = total - rn_share
+            monthly_total = monthly_expenses["Amount"].sum() if not monthly_expenses.empty else 0.0
+            rn_share = monthly_total * split_pct / 100
+            dk_share = monthly_total - rn_share
             split_data = pd.DataFrame(
                 [{"User": "RN", "Percent": f"{split_pct}%", "Amount": rn_share}, {"User": "DK", "Percent": f"{100 - split_pct}%", "Amount": dk_share}]
             )
-            st.markdown("### Split summary")
+            st.markdown(f"### Split Summary of Total Expenses ({selected_month.strftime('%b %Y')})")
             st.dataframe(split_data, hide_index=True, use_container_width=True)
             col_a, col_b = st.columns(2)
             col_a.metric("RN share", f"{rn_share:,.2f}")
             col_b.metric("DK share", f"{dk_share:,.2f}")
-            st.caption("The selected percentage is applied to the report total to split expenses between RN and DK.")
+            st.caption("The selected percentage is applied to the selected month’s total to split expenses between RN and DK.")
 
-            actual_rn = float(user_totals.loc[user_totals["User"] == "RN", "Amount"].sum()) if not user_totals.empty else 0.0
-            actual_dk = float(user_totals.loc[user_totals["User"] == "DK", "Amount"].sum()) if not user_totals.empty else 0.0
+            monthly_user_totals = monthly_expenses.groupby("User", as_index=False)["Amount"].sum() if not monthly_expenses.empty else pd.DataFrame(columns=["User", "Amount"])
+            actual_rn = float(monthly_user_totals.loc[monthly_user_totals["User"] == "RN", "Amount"].sum()) if not monthly_user_totals.empty else 0.0
+            actual_dk = float(monthly_user_totals.loc[monthly_user_totals["User"] == "DK", "Amount"].sum()) if not monthly_user_totals.empty else 0.0
             rn_diff = actual_rn - rn_share
             dk_diff = actual_dk - dk_share
             if abs(rn_diff) < 0.005:
                 settlement = "RN is settled with the target allocation."
             elif rn_diff > 0:
-                settlement = f"RN paid {rn_diff:,.2f} more than their target. DK should pay RN {rn_diff:,.2f}."
+                settlement = f"RN paid Rs {rn_diff:,.2f} more than their target. DK should pay RN **Rs {rn_diff:,.2f}**."
             else:
-                settlement = f"RN paid {abs(rn_diff):,.2f} less than their target. RN should pay DK {abs(rn_diff):,.2f}."
+                settlement = f"RN paid Rs {abs(rn_diff):,.2f} less than their target. DK should pay RN **Rs {abs(rn_diff):,.2f}**."
 
             st.markdown("### Settlement summary")
             st.write(f"Actual RN expense: {actual_rn:,.2f}")
             st.write(f"Actual DK expense: {actual_dk:,.2f}")
-            st.write(settlement)
+            st.markdown(settlement)
 
     with transactions_tab:
         st.dataframe(expenses.drop(columns="ID"), hide_index=True, use_container_width=True)
