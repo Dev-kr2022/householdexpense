@@ -253,12 +253,12 @@ def build_monthly_category_report(expenses: pd.DataFrame) -> pd.DataFrame:
 
 def build_monthly_average_summary(expenses: pd.DataFrame) -> pd.DataFrame:
     if expenses.empty:
-        return pd.DataFrame(columns=["Month", "Average Expense", "Transaction Count"])
+        return pd.DataFrame(columns=["Month", "Total Expense", "Transaction Count"])
 
     monthly_expenses = expenses.copy()
     monthly_expenses["Month"] = pd.to_datetime(monthly_expenses["Date"]).dt.to_period("M").astype(str)
-    summary = monthly_expenses.groupby("Month", as_index=False)["Amount"].mean().rename(columns={"Amount": "Average Expense"})
-    summary["Average Expense"] = summary["Average Expense"].round(2)
+    summary = monthly_expenses.groupby("Month", as_index=False)["Amount"].sum().rename(columns={"Amount": "Total Expense"})
+    summary["Total Expense"] = summary["Total Expense"].round(2)
     summary["Transaction Count"] = monthly_expenses.groupby("Month").size().values
     return summary.sort_values("Month").reset_index(drop=True)
 
@@ -477,12 +477,14 @@ def main() -> None:
                     st.dataframe(transposed_grid, hide_index=False, use_container_width=True)
 
             st.markdown("### Average expense per month")
-            monthly_average_summary = build_monthly_average_summary(monthly_expenses)
-            if monthly_average_summary.empty:
+            monthly_summary = build_monthly_average_summary(expenses)
+            if monthly_summary.empty:
                 st.info("No monthly average data is available for the selected period.")
             else:
-                st.line_chart(monthly_average_summary.set_index("Month")["Average Expense"])
-                st.dataframe(monthly_average_summary, hide_index=True, use_container_width=True)
+                mean_monthly_expense = monthly_summary["Total Expense"].mean()
+                st.metric("Mean monthly expense", f"{mean_monthly_expense:,.2f}")
+                st.line_chart(monthly_summary.set_index("Month")["Total Expense"])
+                st.dataframe(monthly_summary, hide_index=True, use_container_width=True)
 
     with transactions_tab:
         st.caption(f"Transactions for {selected_month.strftime('%b %Y')}")
