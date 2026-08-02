@@ -39,6 +39,19 @@ class ReportFeatureTests(unittest.TestCase):
         self.assertEqual(app.monthly_category_range_months(date(2025, 9, 1), date(2026, 8, 31)), 12)
         self.assertEqual(app.monthly_category_range_months(date(2025, 8, 1), date(2026, 8, 31)), 13)
 
+    def test_database_context_includes_all_transactions(self):
+        expenses = pd.DataFrame(
+            [
+                {"Date": "2024-01-05", "Category": "Food", "User": "RN", "Amount": 80.0, "Note": "breakfast"},
+                {"Date": "2024-02-03", "Category": "Petrol", "User": "DK", "Amount": 50.0, "Note": "fuel"},
+            ]
+        )
+
+        context = app.database_context(expenses)
+
+        self.assertIn("breakfast", context)
+        self.assertIn("fuel", context)
+
 
 if __name__ == "__main__":
     unittest.main()

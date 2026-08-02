@@ -36,7 +36,7 @@ The main UI responsibilities are:
 
 - login screen
 - expense entry form
-- report filtering controls
+- report filters and a selected-month control for the Report and Transactions tabs
 - summary tables, category chart, monthly tables, and monthly-average chart
 - export and AI-related actions
 
@@ -76,9 +76,9 @@ The application builds report data from stored expense records by:
 
 ### 5. Optional AI Insights
 
-The app can optionally use OpenAI to generate insights about the selected report. This is not required for basic app usage.
+The app can optionally use OpenAI to generate insights about all transactions in the database. This is not required for basic app usage.
 
-The AI feature uses only a limited report snapshot rather than the full database, which helps keep the approach safer and simpler.
+The AI section is separate from the Report and Transactions tabs and is not limited by the selected report month. Because the full transaction dataset is sent to the configured OpenAI API when a question is submitted, enable it only when that data-sharing scope is acceptable.
 
 ## Code Concepts and Logic
 
@@ -173,7 +173,7 @@ household_expense_tracker/
 
 ### AI helpers
 
-- report_context(): builds a compact text summary for AI analysis
+- database_context(): builds context from all stored transactions for AI analysis
 - get_api_key(): retrieves the OpenAI API key from environment or secrets
 
 ## Deployment Considerations
@@ -382,11 +382,10 @@ The application includes optional AI support through OpenAI.
 The functions involved are:
 
 - get_api_key(): reads the API key from environment variables or Streamlit secrets
-- report_context(): prepares a compact summary of the filtered report
-- agent_context(): combines the report summary with recent transactions for context
-- ask_agent(): sends the report context and a user question to the OpenAI model
+- database_context(): prepares totals and transaction details from the full database
+- ask_agent(): sends the full-database context and a user question to the OpenAI model
 
-This design sends a focused selected-report summary and, when a question is submitted, up to 100 recent transactions as additional context. Avoid enabling the feature for data you do not want sent to the configured OpenAI API.
+This design sends all stored transaction data when a question is submitted, so the AI can answer database-wide questions. Avoid enabling the feature for data you do not want sent to the configured OpenAI API.
 
 ### 11. Main application workflow
 
@@ -399,7 +398,7 @@ The main() function represents the main execution flow of the app. It performs t
 5. loads the selected expense data
 6. displays summary metrics and report tabs
 7. allows users to edit or delete records
-8. offers AI-based insights for the selected report
+8. offers AI-based insights across the full database in a separate section
 
 This function ties together all the smaller helper functions into a complete user experience.
 

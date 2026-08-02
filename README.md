@@ -12,7 +12,7 @@ You can use it to:
 - View filtered totals, monthly summaries, and settlement calculations
 - Review a category-by-month table (without a monthly category chart)
 - Export reports to CSV
-- Ask for optional AI-generated insights about a report
+- Ask for optional AI-generated insights about all stored transactions
 
 ## Quick start
 
@@ -49,7 +49,7 @@ ADMIN_PASSWORD=choose_a_secure_password
 
 ### Use AI features
 
-Add your OpenAI key to the .env file if you want AI report insights.
+Add your OpenAI key to the .env file if you want AI insights across all stored transactions.
 
 ```env
 OPENAI_API_KEY=your-openai-key
@@ -74,10 +74,11 @@ The app will automatically use PostgreSQL when DATABASE_URL is available.
 1. Open the app and sign in.
 2. Add an expense using the form.
 3. Choose a category and user.
-4. Filter the report, then choose a month for its user totals and split summary.
+4. Filter the available report period, then select the month shown in the Report and Transactions tabs.
 5. Use the dedicated monthly-category date range (up to 12 calendar months) to review the category-by-month table.
 6. Review the category chart and monthly average chart.
 7. Export the filtered report to CSV when needed.
+8. Use the separate AI expense agent section to ask questions across the full database.
 
 ## Deployment
 

@@ -270,47 +270,18 @@ def monthly_category_range_months(start_date: date, end_date: date) -> int:
     return (end_date.year - start_date.year) * 12 + end_date.month - start_date.month + 1
 
 
-def report_context(expenses: pd.DataFrame, report_name: str, split_pct: int, actual_rn: float, actual_dk: float, rn_share: float, dk_share: float) -> str:
-    """Send a limited snapshot of the selected report to the AI, not the full database."""
+def database_context(expenses: pd.DataFrame) -> str:
+    """Build AI context from every transaction stored in the database."""
     category_totals = expenses.groupby("Category", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
     user_totals = expenses.groupby("User", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
     daily_totals = expenses.groupby("Date", as_index=False)["Amount"].sum().sort_values("Date")
-    settlement_direction = (
-        "RN owes DK" if actual_rn < rn_share else
-        "DK owes RN" if actual_rn > rn_share else
-        "Settled"
-    )
-    settlement_amount = abs(actual_rn - rn_share)
-    settlement_note = (
-        f"DK should pay RN {settlement_amount:.2f}." if actual_rn > rn_share else
-        f"RN should pay DK {settlement_amount:.2f}." if actual_rn < rn_share else
-        "The report is settled; no payment is due."
-    )
-    return f"""Report name: {report_name}
-Transactions: {len(expenses)}
+    return f"""Database scope: all stored transactions
+Transaction count: {len(expenses)}
 Total spend: {expenses['Amount'].sum():.2f}
 Category totals:\n{category_totals.to_csv(index=False)}
 User totals:\n{user_totals.to_csv(index=False)}
-Split allocation: RN {split_pct}%, DK {100 - split_pct}%
-Target split amounts: RN {rn_share:.2f}, DK {dk_share:.2f}
-Actual spent: RN {actual_rn:.2f}, DK {actual_dk:.2f}
-Settlement direction: {settlement_direction}
-Settlement amount: {settlement_amount:.2f}
-Settlement note: {settlement_note}
 Daily totals:\n{daily_totals.to_csv(index=False)}
-Recent transactions (up to 100):\n{expenses.head(100).to_csv(index=False)}"""
-
-
-def agent_context(expenses: pd.DataFrame, report_name: str, split_pct: int, actual_rn: float, actual_dk: float, rn_share: float, dk_share: float, latest_transactions: pd.DataFrame) -> str:
-    report_text = report_context(expenses, report_name, split_pct, actual_rn, actual_dk, rn_share, dk_share)
-    latest_text = latest_transactions.to_csv(index=False) if not latest_transactions.empty else ""
-    return (
-        report_text
-        + "\n\nNOTE: The selected report is the primary context for answering. "
-        + "Latest DB transactions are additional context only and may be outside the selected report period.\n"
-        + "Latest DB transactions (most recent 100):\n"
-        + latest_text
-    )
+All transactions:\n{expenses.to_csv(index=False)}"""
 
 
 def ask_agent(api_key: str, question: str, context: str) -> str:
@@ -318,8 +289,8 @@ def ask_agent(api_key: str, question: str, context: str) -> str:
         model="gpt-4o-mini",
         temperature=0,
         messages=[
-            {"role": "system", "content": "You are a household-expense analysis assistant. Use only the supplied report data to answer. The selected report is the primary source. Latest DB transactions are additional context only. If the report includes a settlement note, use it directly. If data cannot answer a question, say so. Be concise, use currency-neutral amounts, avoid financial, medical, or tax advice, and end with exactly three useful follow-up questions."},
-            {"role": "user", "content": f"REPORT DATA:\n{context}\n\nQUESTION:\n{question}"},
+            {"role": "system", "content": "You are a household-expense analysis assistant. Use only the supplied all-database transaction data to answer. If data cannot answer a question, say so. Be concise, use currency-neutral amounts, avoid financial, medical, or tax advice, and end with exactly three useful follow-up questions."},
+            {"role": "user", "content": f"DATABASE DATA:\n{context}\n\nQUESTION:\n{question}"},
         ],
     )
     return response.choices[0].message.content or "No response received."
@@ -343,7 +314,7 @@ def main() -> None:
     if not authenticate_app():
         return
     st.title("🏠 Household Expense Tracker")
-    st.caption("Record daily spending, build custom reports, and ask the AI about the selected data.")
+    st.caption("Record daily spending, view month-based reports, and ask the AI about all stored transactions.")
 
     with st.sidebar:
         st.header("Add an expense")
@@ -396,27 +367,34 @@ def main() -> None:
     if "selected_month" not in st.session_state:
         st.session_state.selected_month = default_month
     selected_month = st.selectbox(
-        "Select month for monthly summaries",
+        "Select month for report and transactions",
         options=available_months,
         format_func=lambda value: value.strftime("%b %Y"),
         key="selected_month",
     )
     selected_month_str = selected_month.strftime("%Y-%m")
     monthly_expenses = expenses[expenses["Date"].str.startswith(selected_month_str, na=False)] if not expenses.empty else pd.DataFrame()
-    total = expenses["Amount"].sum() if not expenses.empty else 0.0
-    average = expenses["Amount"].mean() if not expenses.empty else 0.0
-    highest = expenses.loc[expenses["Amount"].idxmax(), "Category"] if not expenses.empty else "—"
+    total = monthly_expenses["Amount"].sum() if not monthly_expenses.empty else 0.0
+    average = monthly_expenses["Amount"].mean() if not monthly_expenses.empty else 0.0
+    highest = monthly_expenses.loc[monthly_expenses["Amount"].idxmax(), "Category"] if not monthly_expenses.empty else "—"
     col_one, col_two, col_three = st.columns(3)
     col_one.metric("Total spent", f"{total:,.2f}")
-    col_two.metric("Transactions", len(expenses))
+    col_two.metric("Transactions", len(monthly_expenses))
     col_three.metric("Largest category", highest)
 
-    report_tab, transactions_tab, agent_tab = st.tabs(["Report", "Transactions", "AI expense agent"])
+    all_expenses = load_expenses(
+        get_default_report_start(),
+        get_default_report_end(),
+        CATEGORIES,
+        USERS,
+    )
+
+    report_tab, transactions_tab = st.tabs(["Report", "Transactions"])
     with report_tab:
-        if expenses.empty:
-            st.info("No expenses match these filters. Add an expense from the sidebar.")
+        if monthly_expenses.empty:
+            st.info(f"No expenses match the filters for {selected_month.strftime('%b %Y')}.")
         else:
-            category_totals = expenses.groupby("Category", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
+            category_totals = monthly_expenses.groupby("Category", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
             st.bar_chart(category_totals, x="Category", y="Amount")
             st.dataframe(category_totals, hide_index=True, use_container_width=True)
             st.markdown(f"### Total amount paid by user in {selected_month.strftime('%b %Y')}")
@@ -425,7 +403,7 @@ def main() -> None:
             else:
                 monthly_user_totals = monthly_expenses.groupby("User", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
                 st.dataframe(monthly_user_totals, hide_index=True, use_container_width=True)
-            st.download_button("Download this report as CSV", data=expenses.to_csv(index=False).encode("utf-8"), file_name="household_expenses_report.csv", mime="text/csv")
+            st.download_button("Download this report as CSV", data=monthly_expenses.to_csv(index=False).encode("utf-8"), file_name=f"household_expenses_{selected_month_str}.csv", mime="text/csv")
             st.caption(f"Average transaction amount: {average:,.2f}")
 
             st.markdown("### Monthly expense by category")
@@ -468,7 +446,7 @@ def main() -> None:
                     st.dataframe(transposed_grid, hide_index=False, use_container_width=True)
 
             st.markdown("### Average expense per month")
-            monthly_average_summary = build_monthly_average_summary(expenses)
+            monthly_average_summary = build_monthly_average_summary(monthly_expenses)
             if monthly_average_summary.empty:
                 st.info("No monthly average data is available for the selected period.")
             else:
@@ -507,27 +485,34 @@ def main() -> None:
             st.markdown(settlement)
 
     with transactions_tab:
-        st.dataframe(expenses.drop(columns="ID"), hide_index=True, use_container_width=True)
+        st.caption(f"Transactions for {selected_month.strftime('%b %Y')}")
+        st.dataframe(monthly_expenses.drop(columns="ID"), hide_index=True, use_container_width=True)
 
         st.divider()
         st.subheader("Edit or delete a selected record")
-        if expenses.empty:
-            st.info("No records match the current filters.")
+        if monthly_expenses.empty:
+            st.info(f"No records match the filters for {selected_month.strftime('%b %Y')}.")
         else:
-            record_ids = expenses["ID"].tolist()
+            record_ids = monthly_expenses["ID"].tolist()
             selected_id = st.selectbox(
                 "Choose a record to edit or delete",
                 record_ids,
-                format_func=lambda record_id: f"ID {record_id} — {expenses.loc[expenses['ID'] == record_id, 'Date'].iloc[0]} / {expenses.loc[expenses['ID'] == record_id, 'Category'].iloc[0]} / {expenses.loc[expenses['ID'] == record_id, 'Amount'].iloc[0]:.2f}",
+                format_func=lambda record_id: f"ID {record_id} — {monthly_expenses.loc[monthly_expenses['ID'] == record_id, 'Date'].iloc[0]} / {monthly_expenses.loc[monthly_expenses['ID'] == record_id, 'Category'].iloc[0]} / {monthly_expenses.loc[monthly_expenses['ID'] == record_id, 'Amount'].iloc[0]:.2f}",
             )
-            selected = expenses.loc[expenses["ID"] == selected_id].iloc[0]
+            selected = monthly_expenses.loc[monthly_expenses["ID"] == selected_id].iloc[0]
+            st.caption("Selected record")
+            st.dataframe(
+                selected[["Date", "Category", "User", "Amount", "Note"]].to_frame().T,
+                hide_index=True,
+                use_container_width=True,
+            )
 
             with st.form("edit_record_form", clear_on_submit=False):
-                edit_date = st.date_input("Transaction date", value=pd.to_datetime(selected["Date"]).date(), key="edit_date")
-                edit_category = st.selectbox("Category", CATEGORIES, index=CATEGORIES.index(selected["Category"]))
-                edit_user = st.selectbox("User", USERS, index=USERS.index(selected["User"]))
-                edit_amount = st.number_input("Amount", min_value=0.01, step=1.0, value=float(selected["Amount"]), format="%.2f", key="edit_amount")
-                edit_note = st.text_input("Note", value=str(selected["Note"]), key="edit_note")
+                edit_date = st.date_input("Transaction date", value=pd.to_datetime(selected["Date"]).date(), key=f"edit_date_{selected_id}")
+                edit_category = st.selectbox("Category", CATEGORIES, index=CATEGORIES.index(selected["Category"]), key=f"edit_category_{selected_id}")
+                edit_user = st.selectbox("User", USERS, index=USERS.index(selected["User"]), key=f"edit_user_{selected_id}")
+                edit_amount = st.number_input("Amount", min_value=0.01, step=1.0, value=float(selected["Amount"]), format="%.2f", key=f"edit_amount_{selected_id}")
+                edit_note = st.text_input("Note", value=str(selected["Note"]), key=f"edit_note_{selected_id}")
                 update_record = st.form_submit_button("Update record")
             if update_record:
                 update_expense(selected_id, edit_date, edit_category, edit_user, edit_amount, edit_note)
@@ -535,7 +520,7 @@ def main() -> None:
                 rerun_app()
 
             with st.form("delete_record_form", clear_on_submit=False):
-                delete_password = st.text_input("Admin password", type="password", key="delete_password")
+                delete_password = st.text_input("Admin password", type="password", key=f"delete_password_{selected_id}")
                 delete_record = st.form_submit_button("Delete record")
             if delete_record:
                 if delete_password != get_admin_password():
@@ -560,37 +545,32 @@ def main() -> None:
                     st.info("No records found in that range.")
                 rerun_app()
 
-    with agent_tab:
-        st.write("Ask about the report currently selected above. The AI receives only this report’s data.")
-        common_questions = [
-            "How much should DK pay RN based on the report?",
-            "How much will RN get from DK for the selected period?",
-            "Which categories cost the most, and what should I review?",
-            "How did spending change over the selected period?",
-            "What are the largest individual expenses?",
-            "Which dates had unusually high spending?",
-        ]
-        question_choice = st.selectbox("Common questions", ["Write my own question"] + common_questions)
-        custom_question = st.text_area("Your question", placeholder="e.g. How much did I spend on grocery and petrol?")
-        question = custom_question.strip() or (question_choice if question_choice != "Write my own question" else "")
-        if st.button("Ask AI agent", type="primary", disabled=expenses.empty):
-            if not question:
-                st.warning("Choose a common question or write one of your own.")
-            elif not (api_key := get_api_key()):
-                st.error("OPENAI_API_KEY is missing. Add it to .env or Streamlit secrets first.")
-            else:
-                with st.spinner("Reading the selected report…"):
-                    try:
-                        latest_transactions = load_latest_expenses()
-                        answer = ask_agent(
-                            api_key,
-                            question,
-                            agent_context(expenses, report_name, split_pct, actual_rn, actual_dk, rn_share, dk_share, latest_transactions),
-                        )
-                    except Exception:
-                        st.error("The AI agent could not respond. Check the API key and network connection.")
-                    else:
-                        st.markdown(answer)
+    st.divider()
+    st.header("AI expense agent")
+    st.write("Ask about any transaction in the database. The selected report month does not limit these answers.")
+    common_questions = [
+        "Which categories cost the most across all transactions?",
+        "How did spending change over the full database history?",
+        "What are the largest individual expenses?",
+        "Which dates had unusually high spending?",
+        "How much did each user spend in total?",
+    ]
+    question_choice = st.selectbox("Common questions", ["Write my own question"] + common_questions)
+    custom_question = st.text_area("Your question", placeholder="e.g. How much did I spend on grocery and petrol?")
+    question = custom_question.strip() or (question_choice if question_choice != "Write my own question" else "")
+    if st.button("Ask AI agent", type="primary", disabled=all_expenses.empty):
+        if not question:
+            st.warning("Choose a common question or write one of your own.")
+        elif not (api_key := get_api_key()):
+            st.error("OPENAI_API_KEY is missing. Add it to .env or Streamlit secrets first.")
+        else:
+            with st.spinner("Reading all database transactions…"):
+                try:
+                    answer = ask_agent(api_key, question, database_context(all_expenses))
+                except Exception:
+                    st.error("The AI agent could not respond. Check the API key and network connection.")
+                else:
+                    st.markdown(answer)
 
 
 if __name__ == "__main__":
