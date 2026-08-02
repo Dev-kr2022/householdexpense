@@ -477,13 +477,21 @@ def main() -> None:
                     st.dataframe(transposed_grid, hide_index=False, use_container_width=True)
 
             st.markdown("### Average expense per month")
-            monthly_summary = build_monthly_average_summary(expenses)
+            range_avg_expenses = load_expenses(
+                monthly_category_start,
+                monthly_category_end,
+                selected_categories,
+                selected_users,
+            )
+            monthly_summary = build_monthly_average_summary(range_avg_expenses)
             if monthly_summary.empty:
                 st.info("No monthly average data is available for the selected period.")
             else:
                 mean_monthly_expense = monthly_summary["Total Expense"].mean()
                 st.metric("Mean monthly expense", f"{mean_monthly_expense:,.2f}")
-                st.line_chart(monthly_summary.set_index("Month")["Total Expense"])
+                chart_df = monthly_summary.set_index("Month")[["Total Expense"]].copy()
+                chart_df["Mean Line"] = mean_monthly_expense
+                st.line_chart(chart_df)
                 st.dataframe(monthly_summary, hide_index=True, use_container_width=True)
 
     with transactions_tab:
