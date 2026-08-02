@@ -406,14 +406,6 @@ def main() -> None:
             st.download_button("Download this report as CSV", data=monthly_expenses.to_csv(index=False).encode("utf-8"), file_name=f"household_expenses_{selected_month_str}.csv", mime="text/csv")
             st.caption(f"Average transaction amount: {average:,.2f}")
 
-            st.markdown("### Average expense per month")
-            monthly_average_summary = build_monthly_average_summary(monthly_expenses)
-            if monthly_average_summary.empty:
-                st.info("No monthly average data is available for the selected period.")
-            else:
-                st.line_chart(monthly_average_summary.set_index("Month")["Average Expense"])
-                st.dataframe(monthly_average_summary, hide_index=True, use_container_width=True)
-
             split_pct = st.number_input("RN percent share of total", min_value=0, max_value=100, value=40, step=1, format="%d")
             monthly_total = monthly_expenses["Amount"].sum() if not monthly_expenses.empty else 0.0
             rn_share = monthly_total * split_pct / 100
@@ -483,6 +475,14 @@ def main() -> None:
                     transposed_grid["Total"] = transposed_grid.sum(axis=1)
                     transposed_grid = transposed_grid.sort_index()
                     st.dataframe(transposed_grid, hide_index=False, use_container_width=True)
+
+            st.markdown("### Average expense per month")
+            monthly_average_summary = build_monthly_average_summary(monthly_expenses)
+            if monthly_average_summary.empty:
+                st.info("No monthly average data is available for the selected period.")
+            else:
+                st.line_chart(monthly_average_summary.set_index("Month")["Average Expense"])
+                st.dataframe(monthly_average_summary, hide_index=True, use_container_width=True)
 
     with transactions_tab:
         st.caption(f"Transactions for {selected_month.strftime('%b %Y')}")
