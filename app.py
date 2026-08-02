@@ -344,7 +344,7 @@ def main() -> None:
         selected_categories = st.multiselect("Categories", CATEGORIES, default=CATEGORIES, key="selected_categories")
         selected_users = st.multiselect("Users", USERS, default=USERS, key="selected_users")
         report_name = st.text_input("Report name", value="Household expense report", key="report_name")
-        
+
         st.divider()
         if st.button("🔄 Refresh report", type="primary", use_container_width=True):
             rerun_app()
@@ -366,6 +366,8 @@ def main() -> None:
     month_start = report_start.replace(day=1)
     month_end = report_end.replace(day=1)
     available_months = list(pd.date_range(month_start, month_end, freq="MS"))
+    # Sort available months in descending order (most recent month first)
+    available_months = sorted(available_months, reverse=True)
     current_month = date.today().replace(day=1)
     default_month = min(max(current_month, month_start), month_end)
     if "selected_month" not in st.session_state:
@@ -548,9 +550,15 @@ def main() -> None:
         st.subheader("Flush records by date")
         flush_start = st.date_input("Flush from", value=report_start, key="flush_start")
         flush_end = st.date_input("Flush to", value=report_end, key="flush_end")
+
+        st.warning("⚠️ **Warning:** Flushing records will permanently delete all expenses within the selected date range from the database. This action cannot be undone.")
+        flush_password = st.text_input("Admin password for flushing records", type="password", key="flush_admin_password")
+
         if st.button("Delete records in date range"):
             if flush_start > flush_end:
                 st.error("The start date must be on or before the end date.")
+            elif flush_password != get_admin_password():
+                st.error("Admin password is incorrect. Records were not flushed.")
             else:
                 deleted = flush_expenses(flush_start, flush_end)
                 if deleted:
