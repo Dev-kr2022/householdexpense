@@ -10,7 +10,8 @@ You can use it to:
 - Choose the user associated with each expense
 - Filter expenses by date, category, and user
 - View filtered totals, monthly summaries, and settlement calculations
-- Review a category-by-month table (without a monthly category chart)
+- Review a category-by-month table and monthly average summary with mean expense reference lines
+- Use a manual "Refresh report" button in the sidebar to control report updates without immediate auto-refresh after entries
 - Export reports to CSV
 - Ask for optional AI-generated insights about all stored transactions
 
@@ -75,10 +76,11 @@ The app will automatically use PostgreSQL when DATABASE_URL is available.
 2. Add an expense using the form.
 3. Choose a category and user.
 4. Filter the available report period, then select the month shown in the Report and Transactions tabs.
-5. Use the dedicated monthly-category date range (up to 12 calendar months) to review the category-by-month table.
-6. Review the category chart and monthly average chart.
-7. Export the filtered report to CSV when needed.
-8. Use the separate AI expense agent section to ask questions across the full database.
+5. Use the dedicated monthly-category date range (up to 12 calendar months) to review the category-by-month table and monthly average summary with mean lines.
+6. Click **🔄 Refresh report** in the sidebar when you want to update the dashboard views after entering transactions.
+7. Review the category chart, monthly averages, split summaries, and settlement calculations.
+8. Export the filtered report to CSV when needed.
+9. Use the separate AI expense agent section to ask questions across the full database.
 
 ## Deployment
 
