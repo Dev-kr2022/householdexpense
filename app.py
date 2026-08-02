@@ -389,6 +389,47 @@ def main() -> None:
         USERS,
     )
 
+    st.markdown("### Monthly expense by category")
+    default_monthly_category_end = report_end
+    default_monthly_category_start = (pd.Timestamp(report_end).to_period("M") - 11).start_time.date()
+    monthly_category_col_one, monthly_category_col_two = st.columns(2)
+    monthly_category_start = monthly_category_col_one.date_input(
+        "Monthly category range — from",
+        value=default_monthly_category_start,
+        key="monthly_category_start",
+    )
+    monthly_category_end = monthly_category_col_two.date_input(
+        "Monthly category range — to",
+        value=default_monthly_category_end,
+        key="monthly_category_end",
+    )
+    month_count = monthly_category_range_months(monthly_category_start, monthly_category_end)
+    if monthly_category_start > monthly_category_end:
+        st.error("The monthly category range start date must be on or before the end date.")
+    elif month_count > 12:
+        st.error("Monthly expense by category can show a maximum of 12 calendar months. Choose a shorter range.")
+    else:
+        monthly_category_expenses = load_expenses(
+            monthly_category_start,
+            monthly_category_end,
+            selected_categories,
+            selected_users,
+        )
+        monthly_category_report = build_monthly_category_report(monthly_category_expenses)
+        if monthly_category_report.empty:
+            st.info("No monthly breakdown is available for the selected range.")
+        else:
+            monthly_category_pivot = monthly_category_report.pivot(index="Month", columns="Category", values="Amount").fillna(0)
+            monthly_category_pivot["Total"] = monthly_category_pivot.sum(axis=1)
+            monthly_category_pivot = monthly_category_pivot.sort_index()
+            monthly_category_pivot.index = monthly_category_pivot.index.map(lambda value: pd.to_datetime(value).strftime("%b-%y"))
+            transposed_grid = monthly_category_pivot.T
+            transposed_grid["Total"] = transposed_grid.sum(axis=1)
+            transposed_grid = transposed_grid.sort_index()
+            st.dataframe(transposed_grid, hide_index=False, use_container_width=True)
+
+    st.divider()
+
     report_tab, transactions_tab = st.tabs(["Report", "Transactions"])
     with report_tab:
         if monthly_expenses.empty:
@@ -405,45 +446,6 @@ def main() -> None:
                 st.dataframe(monthly_user_totals, hide_index=True, use_container_width=True)
             st.download_button("Download this report as CSV", data=monthly_expenses.to_csv(index=False).encode("utf-8"), file_name=f"household_expenses_{selected_month_str}.csv", mime="text/csv")
             st.caption(f"Average transaction amount: {average:,.2f}")
-
-            st.markdown("### Monthly expense by category")
-            default_monthly_category_end = report_end
-            default_monthly_category_start = (pd.Timestamp(report_end).to_period("M") - 11).start_time.date()
-            monthly_category_col_one, monthly_category_col_two = st.columns(2)
-            monthly_category_start = monthly_category_col_one.date_input(
-                "Monthly category range — from",
-                value=default_monthly_category_start,
-                key="monthly_category_start",
-            )
-            monthly_category_end = monthly_category_col_two.date_input(
-                "Monthly category range — to",
-                value=default_monthly_category_end,
-                key="monthly_category_end",
-            )
-            month_count = monthly_category_range_months(monthly_category_start, monthly_category_end)
-            if monthly_category_start > monthly_category_end:
-                st.error("The monthly category range start date must be on or before the end date.")
-            elif month_count > 12:
-                st.error("Monthly expense by category can show a maximum of 12 calendar months. Choose a shorter range.")
-            else:
-                monthly_category_expenses = load_expenses(
-                    monthly_category_start,
-                    monthly_category_end,
-                    selected_categories,
-                    selected_users,
-                )
-                monthly_category_report = build_monthly_category_report(monthly_category_expenses)
-                if monthly_category_report.empty:
-                    st.info("No monthly breakdown is available for the selected range.")
-                else:
-                    monthly_category_pivot = monthly_category_report.pivot(index="Month", columns="Category", values="Amount").fillna(0)
-                    monthly_category_pivot["Total"] = monthly_category_pivot.sum(axis=1)
-                    monthly_category_pivot = monthly_category_pivot.sort_index()
-                    monthly_category_pivot.index = monthly_category_pivot.index.map(lambda value: pd.to_datetime(value).strftime("%b-%y"))
-                    transposed_grid = monthly_category_pivot.T
-                    transposed_grid["Total"] = transposed_grid.sum(axis=1)
-                    transposed_grid = transposed_grid.sort_index()
-                    st.dataframe(transposed_grid, hide_index=False, use_container_width=True)
 
             st.markdown("### Average expense per month")
             monthly_average_summary = build_monthly_average_summary(monthly_expenses)
