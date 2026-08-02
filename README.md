@@ -9,7 +9,8 @@ You can use it to:
 - Add new expenses with a date, category, amount, and note
 - Choose the user associated with each expense
 - Filter expenses by date, category, and user
-- Create named reports and view totals and charts
+- View filtered totals, monthly summaries, and settlement calculations
+- Review a category-by-month table (without a monthly category chart)
 - Export reports to CSV
 - Ask for optional AI-generated insights about a report
 
@@ -73,8 +74,10 @@ The app will automatically use PostgreSQL when DATABASE_URL is available.
 1. Open the app and sign in.
 2. Add an expense using the form.
 3. Choose a category and user.
-4. Filter and review your data in the reports section.
-5. Export a report to CSV when needed.
+4. Filter the report, then choose a month for its user totals and split summary.
+5. Use the dedicated monthly-category date range (up to 12 calendar months) to review the category-by-month table.
+6. Review the category chart and monthly average chart.
+7. Export the filtered report to CSV when needed.
 
 ## Deployment
 
@@ -88,6 +91,7 @@ For hosted deployment, add your secrets in Streamlit Cloud:
 
 ```toml
 DATABASE_URL = "postgresql://user:password@host:5432/postgres"
+ADMIN_PASSWORD = "choose_a_secure_password"
 OPENAI_API_KEY = "your-openai-key"
 ```
 
@@ -105,4 +109,4 @@ export SQLITE_PATH="/path/to/expenses.db"
 
 ## Notes
 
-Common expense categories include Grocery, Internet, Electricity, Gas, Petrol, Maintenance, Cooper, Cooper Doctor, Car Servicing, Car Wash, Alcohol, Parking, Festival, Misc, Medical, and FTH.
+Common expense categories include Grocery, Food, House Help, Internet, Electricity, Gas, Petrol, Maintenance, Cooper, Cooper Doctor, Car Servicing, Car Wash, Alcohol, Parking, Festival, Misc, Medical, and FTH.

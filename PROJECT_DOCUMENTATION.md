@@ -37,7 +37,7 @@ The main UI responsibilities are:
 - login screen
 - expense entry form
 - report filtering controls
-- summary tables and chart display
+- summary tables, category chart, monthly tables, and monthly-average chart
 - export and AI-related actions
 
 ### 2. Database Layer
@@ -69,6 +69,9 @@ The application builds report data from stored expense records by:
 - filtering by selected categories
 - filtering by selected users
 - summarizing totals by category and user
+- grouping expenses by month and category
+- limiting the monthly category view to a user-selected range of up to 12 calendar months
+- calculating a selected month's split and settlement
 - creating a simple settlement-style summary
 
 ### 5. Optional AI Insights
@@ -85,7 +88,7 @@ The main file is app.py. When the app starts, it:
 
 1. loads environment variables
 2. configures Streamlit page settings
-3. sets up constants such as categories, users, and password
+3. sets up categories, users, and configuration helpers
 4. initializes the database connection
 5. renders the login screen if needed
 6. loads the main app interface
@@ -94,7 +97,8 @@ The main file is app.py. When the app starts, it:
 
 The app uses a simple password-based login to protect access:
 
-- the default password is stored in the code as ADMIN_PASSWORD
+- `ADMIN_PASSWORD` is read from the environment or Streamlit secrets
+- if no password is configured, the app displays a configuration error and remains locked
 - users enter the password in a Streamlit form
 - if the password matches, the session is marked as logged in
 
@@ -133,8 +137,11 @@ household_expense_tracker/
 ├── requirements.txt
 ├── .env.example
 ├── .env
+├── scripts/
+│   └── run_app.sh
 ├── tests/
-│   └── test_db_config.py
+│   ├── test_db_config.py
+│   └── test_report_features.py
 └── PROJECT_DOCUMENTATION.md
 ```
 
@@ -160,6 +167,9 @@ household_expense_tracker/
 - load_latest_expenses(): loads recent expense records
 - get_default_report_start(): finds the earliest stored expense date
 - get_default_report_end(): finds the latest stored expense date
+- build_monthly_category_report(): groups filtered expenses by month and category
+- build_monthly_average_summary(): calculates each month's average expense and transaction count
+- monthly_category_range_months(): validates the maximum 12-calendar-month category range
 
 ### AI helpers
 
@@ -183,6 +193,9 @@ The project includes basic regression tests focused on database behavior:
 - database type detection
 - PostgreSQL placeholder compatibility
 - connection fallback behavior
+- monthly category grouping
+- monthly average calculation
+- monthly category range limit
 
 These tests help prevent regressions when changing how database queries are handled.
 
@@ -208,6 +221,9 @@ pip install -r requirements.txt
 ```bash
 cp .env.example .env
 ```
+
+Set a real `ADMIN_PASSWORD` in `.env` before running the app. Do not commit
+`.env`; for Streamlit Cloud, configure the same value as a secret.
 
 ### Running the app locally
 
@@ -268,7 +284,7 @@ At the top of the file, the application:
 - loads environment variables from .env
 - sets page configuration for Streamlit
 - defines the list of categories and users
-- sets the default admin password
+- reads the admin password from environment configuration or Streamlit secrets
 - defines the database path and SQL table creation statements
 
 These definitions form the foundation of the app and are used throughout the script.
@@ -317,6 +333,7 @@ It works by:
 - checking whether the user is already logged in through Streamlit session state
 - showing a login form if not logged in
 - validating the entered password against the stored admin password
+- showing a configuration error when no admin password is available
 - allowing the user to access the main app only after successful authentication
 
 This is a simple but effective approach for a household or small-group application.
@@ -354,7 +371,7 @@ This enables the application to:
 - display transaction data in table form
 - calculate totals and averages
 - group expenses by category or user
-- create charts and summaries for the report view
+- create a category chart, category-by-month table, monthly-average chart, and settlement summary
 
 The report logic is therefore data-driven and easy to extend.
 
@@ -369,7 +386,7 @@ The functions involved are:
 - agent_context(): combines the report summary with recent transactions for context
 - ask_agent(): sends the report context and a user question to the OpenAI model
 
-This design ensures that the AI only receives a focused summary rather than the full database, which keeps the feature manageable and safer.
+This design sends a focused selected-report summary and, when a question is submitted, up to 100 recent transactions as additional context. Avoid enabling the feature for data you do not want sent to the configured OpenAI API.
 
 ### 11. Main application workflow
 
@@ -405,6 +422,5 @@ Possible enhancements include:
 - a proper user authentication system
 - multi-user role management
 - richer charts and dashboards
-- monthly expense insights
 - recurring expense support
 - improved backup and export options

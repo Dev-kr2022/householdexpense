@@ -1,4 +1,5 @@
 import unittest
+from datetime import date
 
 import pandas as pd
 
@@ -33,6 +34,10 @@ class ReportFeatureTests(unittest.TestCase):
 
         self.assertIn("Average Expense", summary.columns)
         self.assertAlmostEqual(summary.loc[summary["Month"] == "2024-01", "Average Expense"].iloc[0], 60.0)
+
+    def test_monthly_category_range_is_limited_to_twelve_calendar_months(self):
+        self.assertEqual(app.monthly_category_range_months(date(2025, 9, 1), date(2026, 8, 31)), 12)
+        self.assertEqual(app.monthly_category_range_months(date(2025, 8, 1), date(2026, 8, 31)), 13)
 
 
 if __name__ == "__main__":
