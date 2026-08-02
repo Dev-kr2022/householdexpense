@@ -327,7 +327,7 @@ def main() -> None:
             submitted = st.form_submit_button("Save expense", use_container_width=True)
         if submitted:
             add_expense(transaction_date, category, user, amount, note)
-            st.success("Expense saved.")
+            st.success("Expense saved. Click '🔄 Refresh report' below to update views.")
 
         st.divider()
         st.header("Report filters")
@@ -344,6 +344,10 @@ def main() -> None:
         selected_categories = st.multiselect("Categories", CATEGORIES, default=CATEGORIES, key="selected_categories")
         selected_users = st.multiselect("Users", USERS, default=USERS, key="selected_users")
         report_name = st.text_input("Report name", value="Household expense report", key="report_name")
+        
+        st.divider()
+        if st.button("🔄 Refresh report", type="primary", use_container_width=True):
+            rerun_app()
 
     if report_start > report_end:
         st.error("The report start date must be on or before the end date.")
